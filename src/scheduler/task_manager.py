@@ -2,22 +2,24 @@ import heapq
 import threading
 import time
 import asyncio
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
-from task import Task, TaskStatus, ExecutionType
+
+from config import MAX_WORKERS, CHECKPOINT_DB_PATH
+from models.task import Task, TaskStatus, ExecutionType
 from worker import BaseWorker
 
 
-class TaskMiddleware:
+
+class TaskManager:
     """
     中间人/调度器
     管理任务队列、Worker 生命周期、资源调度
     """
 
-    def __init__(self, config: Optional[Dict] = None):
-        self.config = config or {}
-        self.max_workers = self.config.get("max_workers", 4)
-        self.db_path = self.config.get("db_path", "checkpoints.db")
+    def __init__(self):
+        self.max_workers = MAX_WORKERS
+        self.db_path = CHECKPOINT_DB_PATH
 
         # 优先队列
         self.pending_queue: List[Task] = []  # 待执行的任务队列
@@ -416,7 +418,7 @@ class TaskMiddleware:
                         elif task.type == ExecutionType.COROUTINE:
                             # 检查任务配置中的任务类型
                             task_type = task.config.get("task_type")
-                            if task_type == "research_writing":
+                            if task_type == "research_write":
                                 from worker import AsyncResearchWritingWorker
                                 worker = AsyncResearchWritingWorker(task, self, db_path=self.db_path)
                                 self.workers[task.task_id] = worker
