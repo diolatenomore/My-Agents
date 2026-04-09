@@ -24,17 +24,24 @@ class TaskType(Enum):
     FILE_RW = "file_rw"
     AUTO_PLAN = "auto_plan"
 
+class Priority(Enum):
+    """数值越小优先级越高"""
+    P0 = 0
+    P1 = 1
+    P2 = 2
+    P3 = 3
+    P4 = 4
+
 @dataclass
 class Task:
     """任务对象"""
     task_id: str
-    priority: int              # 越小优先级越高
+    priority: Priority      # 越小优先级越高
     query: str    # 用户输入
-    created_at: datetime
-    status: TaskStatus = TaskStatus.RUNNING
     task_type: TaskType
     # execution_type: ExecutionType = ExecutionType.THREAD
-    is_resume: bool = False    # 是否是的恢复任务
+    status: TaskStatus = TaskStatus.PENDING
+    is_resume: bool = False    # 是否为恢复的任务
     created_at: datetime = field(default_factory=datetime.now)
 
     # 用于优先队列比较

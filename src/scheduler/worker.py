@@ -8,21 +8,20 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from done.VirtualFileSystem.init_db import DB_PATH
+from config import CHECKPOINT_DB_PATH
 from models.task import Task, TaskStatus
-from utils import extract_content
+from scheduler.graph_builder import GraphBuilder
+from utils.common import extract_content, logger
 
-
-DB_PATH = "checkpoints.db"
 
 # TODO 统一worker，把任务类型的分类放到graph_builder
 
 class BaseWorker(ABC):
     """Worker 基类"""
-    def __init__(self, task: Task, middleware):
+    def __init__(self, task: Task, task_manager):
         self.task = task
         self.worker_id = f"worker-{task.task_id}"
-        self.middleware = middleware
+        self.task_manager = task_manager
 
     @property
     @abstractmethod
@@ -48,8 +47,8 @@ class BaseWorker(ABC):
 
 class ThreadBaseWorker(BaseWorker):
     """线程 Worker 基类"""
-    def __init__(self, task: Task, middleware):
-        super().__init__(task, middleware)
+    def __init__(self, task: Task, task_manager):
+        super().__init__(task, task_manager)
         self._pause_flag = threading.Event()
 
     @abstractmethod
@@ -63,15 +62,13 @@ class ThreadBaseWorker(BaseWorker):
 
 class AsyncBaseWorker(BaseWorker):
     """异步 Worker 基类"""
-    def __init__(self, task: Task, middleware):
-        super().__init__(task, middleware)
+    def __init__(self, task: Task, task_manager):
+        super().__init__(task, task_manager)
         self._pause_flag = asyncio.Event()
         self.running_task = None  # 保存 asyncio.Task 引用
 
         self.config = {"configurable": {"thread_id": task.task_id}}
 
-        # 创建研究-写作工作流
-        from graph_builder import GraphBuilder
         self.state_graph, self.initial_state = GraphBuilder.create_graph(task.task_type, task.query)
 
     def set_running_task(self, task):
@@ -83,30 +80,32 @@ class AsyncBaseWorker(BaseWorker):
         self.task.status = TaskStatus.RUNNING
         try:
             # 使用 AsyncSqliteSaver
-            async with AsyncSqliteSaver.from_conn_string(self.db_path) as checkpointer:
+            async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
                 self.graph = self.state_graph.compile(checkpointer=checkpointer)
                 # 执行工作流
                 if self.task.is_resume:
+                    logger.info(f"[{self.worker_id}] 任务 {self.task.task_id} 为恢复任务，从断点继续执行")
                     response = await self.graph.ainvoke(None, self.config)
                 else:
+                    logger.info(f"[{self.worker_id}] 任务 {self.task.task_id} 为新任务，从初始状态开始执行")
                     response = await self.graph.ainvoke(self.initial_state, self.config)
 
                 # 检查任务状态，只有未被暂停或取消的任务才会设置结果
                 if self.task.status != TaskStatus.PAUSED and self.task.status != TaskStatus.CANCELLED:
-                    print(f"[{self.worker_id}] 任务执行完成")
+                    logger.info(f"[{self.worker_id}] 任务执行完成")
                     self.task.status = TaskStatus.COMPLETED
-                    self.middleware.set_result(self.task.task_id, extract_content(response))
+                    self.task_manager.set_result(self.task.task_id, extract_content(response))
         except asyncio.CancelledError:
             # 捕获取消异常
-            print(f"[{self.worker_id}] 任务被取消，保存断点", "使用task.cancel")
+            logger.info(f"[{self.worker_id}] 任务被取消，保存断点", "使用task.cancel")
             self.task.status = TaskStatus.PAUSED
             # 任务被取消时，langgraph 会自动处理中断和状态保存
         except Exception as e:
             # 检查任务状态，只有未暂停或取消的任务才会设置错误结果
             if self.task.status != TaskStatus.PAUSED and self.task.status != TaskStatus.CANCELLED:
-                print(f"[{self.worker_id}] 任务执行出错: {str(e)}")
+                logger.error(f"[{self.worker_id}] 任务执行出错: {str(e)}")
                 self.task.status = TaskStatus.ERROR
-                self.middleware.set_result(self.task.task_id, f"Error: {str(e)}")
+                self.task_manager.set_result(self.task.task_id, f"Error: {str(e)}")
 
     @property
     def pause_flag(self):
@@ -117,7 +116,7 @@ class AsyncBaseWorker(BaseWorker):
         # 继续维护pause_flag
         self.pause_flag.set()
         if self.running_task:
-            print("call cancel....")
+            logger.info(f"[{self.worker_id}] 任务 {self.task.task_id} 被暂停")
             self.running_task.cancel()
         self.task.status = TaskStatus.PAUSED
 
@@ -125,7 +124,6 @@ class AsyncBaseWorker(BaseWorker):
     def cancel(self):
         self.pause_flag.set()
         if self.running_task:
-            print("call cancel....")
+            logger.info(f"[{self.worker_id}] 任务 {self.task.task_id} 被取消")
             self.running_task.cancel()
         self.task.status = TaskStatus.CANCELLED
-        print(f"[{self.worker_id}] 任务已取消")

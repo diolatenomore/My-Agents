@@ -4,8 +4,8 @@ from typing import Optional, Dict, List
 import sqlite3
 import os
 
-from staging_area import StagingArea
-from init_db import DB_PATH
+from config import DB_PATH
+from vfs.staging_area import StagingArea
 
 # TODO 有无必要把要写入数据库的记录先缓存起来，再批量写入数据库
 

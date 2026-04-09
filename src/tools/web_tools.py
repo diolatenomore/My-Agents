@@ -1,15 +1,14 @@
 from typing import Any, Dict
 import requests
 from src.tools.base import Tool
-from config.config import config
 
 class WebTools(Tool):
     """网络操作工具"""
     
     def __init__(self):
         super().__init__("web_tools", "网络操作工具，包括网页访问、搜索等操作")
-        self.timeout = config.get("network.timeout", 30)
-        self.user_agent = config.get("network.user_agent", "AI-Agent/0.1.0")
+        # self.timeout = config.get("network.timeout", 30)
+        # self.user_agent = config.get("network.user_agent", "AI-Agent/0.1.0")
     
     def run(self, operation: str, **kwargs) -> Any:
         """运行网络操作

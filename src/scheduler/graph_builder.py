@@ -8,13 +8,13 @@ import operator
 from langgraph.types import interrupt
 from langchain_community.chat_models.tongyi import ChatTongyi
 
-import agents
 from agents.research_write import RESEARCH_PROMPT, WRITE_PROMPT
-from config import MODEL
+from config import AGENT_WORKSPACE_PATH
+from src.config import MODEL
 from models.task import TaskType
 from models.state import ResearchWriteState
 from tools.research_write_tools import read_file, write_file, tavily_search
-from utils import extract_content
+from utils.common import extract_content
 
 class GraphBuilder:
     """
@@ -38,7 +38,7 @@ class GraphBuilder:
 
 def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]:
     """创建研究-写作工作流图和初始状态"""
-    backend = FilesystemBackend(root_dir="./agent_workspace", virtual_mode=True)
+    backend = FilesystemBackend(root_dir=AGENT_WORKSPACE_PATH, virtual_mode=True)
 
     # 创建代理
     research_agent = create_deep_agent(
@@ -58,7 +58,7 @@ def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]
 
     # 创建监督节点
     def supervisor_node(state: ResearchWriteState) -> ResearchWriteState:
-        model = ChatTongyi(model=agents.model)
+        model = ChatTongyi(model=MODEL)
         state_str = f"当前状态：\n- 研究结果：{'None' if not state.get('research_file') else '已完成'}\n- 写作结果：{'None' if not state.get('write_file') else '已完成'}"
         print(state_str)
 

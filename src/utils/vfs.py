@@ -1,6 +1,3 @@
-import os
-
-
 def check_file_path(file_path: str):
     pass
 

@@ -5,9 +5,10 @@ import asyncio
 from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
 
-from config import MAX_WORKERS, CHECKPOINT_DB_PATH
+from src.config import MAX_WORKERS, CHECKPOINT_DB_PATH
 from models.task import Task, TaskStatus, ExecutionType
-from worker import BaseWorker
+from scheduler.worker import BaseWorker, AsyncBaseWorker
+from utils.common import logger
 
 
 
@@ -74,7 +75,8 @@ class TaskManager:
         # 加入待执行队列
         with self.queue_lock:
             heapq.heappush(self.pending_queue, task)
-        print(f"[Middleware] 任务 {task.task_id} 已提交，优先级: {task.priority})")
+        logger.info(f"[TaskManager] 任务 {task.task_id} 已提交，优先级: {task.priority})")
+        # print(f"[TaskManager] 任务 {task.task_id} 已提交，优先级: {task.priority})")
         
         # 执行抢占式调度
         if preemptive:
@@ -86,8 +88,10 @@ class TaskManager:
         """
         with self.queue_lock:
             if not self.pending_queue:
-                raise IndexError("Pending queue is empty")
+                return None
             task = heapq.heappop(self.pending_queue)
+            logger.info(f"[TaskManager] 任务 {task.task_id} 已从待执行队列取出，优先级: {task.priority})")
+            # print(f"[TaskManager] 任务 {task.task_id} 已从待执行队列取出，优先级: {task.priority})")
             return task
 
     def set_result(self, task_id: str, result: Any):
@@ -100,8 +104,9 @@ class TaskManager:
         with self.worker_lock:
             if task_id in self.workers:
                 del self.workers[task_id]
-                print(f"[Middleware] 任务 {task_id} 已完成，worker已清理")
-
+                logger.info(f"[TaskManager] 任务 {task_id} 已完成，worker已清理")
+                # print(f"[TaskManager] 任务 {task_id} 已完成，worker已清理")
+        
     def get_result(self, task_id: str):
         """
         获取任务结果
@@ -143,7 +148,8 @@ class TaskManager:
                 # 将任务添加到暂停队列
                 with self.queue_lock:
                     heapq.heappush(self.paused_queue, task)
-                print(f"[Middleware] 任务 {task_id} 已暂停并移至暂停队列")
+                logger.info(f"[TaskManager] 任务 {task_id} 已暂停并移至暂停队列")
+                # print(f"[TaskManager] 任务 {task_id} 已暂停并移至暂停队列")
                 return
 
         # 若不在执行中，检查是否在待执行队列
@@ -156,10 +162,12 @@ class TaskManager:
                     # 更新状态并加入暂停队列
                     task.status = TaskStatus.PAUSED
                     heapq.heappush(self.paused_queue, task)
-                    print(f"[Middleware] 任务 {task_id} 已从待执行队列暂停")
+                    logger.info(f"[TaskManager] 任务 {task_id} 已从待执行队列暂停")
+                    # print(f"[TaskManager] 任务 {task_id} 已从待执行队列暂停")
                     return
 
-        print(f"[Middleware] 任务 {task_id} 不存在或未在执行/待执行")
+        logger.info(f"[TaskManager] 任务 {task_id} 不存在或未在执行/待执行")
+        # print(f"[TaskManager] 任务 {task_id} 不存在或未在执行/待执行")
 
     def resume_task(self, task_id, preemptive: bool = False):
         """
@@ -189,9 +197,11 @@ class TaskManager:
                 task_found.is_resume = True
                 # 将任务添加到待执行队列
                 heapq.heappush(self.pending_queue, task_found)
-                print(f"[Middleware] 任务 {task_id} 已恢复并移至待执行队列")
+                logger.info(f"[TaskManager] 任务 {task_id} 已恢复并移至待执行队列")
+                # print(f"[TaskManager] 任务 {task_id} 已恢复并移至待执行队列")
             else:
-                print(f"[Middleware] 任务 {task_id} 不存在或未暂停")
+                logger.info(f"[TaskManager] 任务 {task_id} 不存在或未暂停")
+                # print(f"[TaskManager] 任务 {task_id} 不存在或未暂停")
         
         # 实现抢占式逻辑（在锁外部执行，因为锁不是可重入的）
         if preemptive and task_found:
@@ -205,7 +215,8 @@ class TaskManager:
                 worker = self.workers[task_id]
                 worker.cancel()
                 del self.workers[task_id]
-                print(f"[Middleware] 任务 {task_id} 已从worker中删除")
+                logger.info(f"[TaskManager] 任务 {task_id} 已从worker中删除")
+                # print(f"[TaskManager] 任务 {task_id} 已从worker中删除")
         
         # 检查任务是否在待执行队列中
         with self.queue_lock:
@@ -215,7 +226,8 @@ class TaskManager:
                 if task.task_id == task_id:
                     self.pending_queue.pop(i)
                     heapq.heapify(self.pending_queue)
-                    print(f"[Middleware] 任务 {task_id} 已从待执行队列中删除")
+                    logger.info(f"[TaskManager] 任务 {task_id} 已从待执行队列中删除")
+                    # print(f"[TaskManager] 任务 {task_id} 已从待执行队列中删除")
                     task_found = True
                     break
             
@@ -225,7 +237,8 @@ class TaskManager:
                     if task.task_id == task_id:
                         self.paused_queue.pop(i)
                         heapq.heapify(self.paused_queue)
-                        print(f"[Middleware] 任务 {task_id} 已从暂停队列中删除")
+                        logger.info(f"[TaskManager] 任务 {task_id} 已从暂停队列中删除")
+                        # print(f"[TaskManager] 任务 {task_id} 已从暂停队列中删除")
                         task_found = True
                         break
         # 如果任务正在执行，先取消
@@ -233,12 +246,14 @@ class TaskManager:
             if task_id in self.workers:
                 self.workers[task_id].cancel()
                 del self.workers[task_id]
-                print(f"[Middleware] 任务 {task_id} 正在执行，已取消并清理worker")
+                logger.info(f"[TaskManager] 任务 {task_id} 正在执行，已取消并清理worker")
+                # print(f"[TaskManager] 任务 {task_id} 正在执行，已取消并清理worker")
         # 清理结果
         with self.result_lock:
             if task_id in self.results:
                 del self.results[task_id]
-                print(f"[Middleware] 任务 {task_id} 的结果已清理")
+                logger.info(f"[TaskManager] 任务 {task_id} 的结果已清理")
+                # print(f"[TaskManager] 任务 {task_id} 的结果已清理")
 
     def change_priority(self, task_id: str, priority: int, preemptive: bool = False):
         """
@@ -263,11 +278,13 @@ class TaskManager:
         status = self.get_task_status(task_id)
         
         if status is None:
-            print(f"[Middleware] 任务 {task_id} 不存在")
+            logger.info(f"[TaskManager] 任务 {task_id} 不存在")
+            # print(f"[TaskManager] 任务 {task_id} 不存在")
             return
         
         if status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.ERROR):
-            print(f"[Middleware] 任务 {task_id} 已完成/取消/错误，无法修改优先级")
+            logger.info(f"[TaskManager] 任务 {task_id} 已完成/取消/错误，无法修改优先级")
+            # print(f"[TaskManager] 任务 {task_id} 已完成/取消/错误，无法修改优先级")
             return
         
         # 根据任务状态决定如何修改优先级
@@ -278,7 +295,8 @@ class TaskManager:
                 if worker:
                     # 更新任务优先级
                     worker.task.priority = priority
-                    print(f"[Middleware] 任务 {task_id} 优先级已修改为 {priority}")
+                    logger.info(f"[TaskManager] 任务 {task_id} 优先级已修改为 {priority}")
+                    # print(f"[TaskManager] 任务 {task_id} 优先级已修改为 {priority}")
         
         # 任务在待执行队列
         elif status == TaskStatus.PENDING:    
@@ -301,8 +319,8 @@ class TaskManager:
                     
                     # 重新加入队列
                     heapq.heappush(self.pending_queue, task_found)
-                    
-                    print(f"[Middleware] 任务 {task_id} 优先级已修改为 {priority}")
+                    logger.info(f"[TaskManager] 任务 {task_id} 优先级已修改为 {priority}")
+                    # print(f"[TaskManager] 任务 {task_id} 优先级已修改为 {priority}")
         
         # 任务在暂停队列
         elif status == TaskStatus.PAUSED:    
@@ -325,8 +343,8 @@ class TaskManager:
                     
                     # 重新加入队列
                     heapq.heappush(self.paused_queue, task_found)
-                    
-                    print(f"[Middleware] 任务 {task_id} 优先级已修改为 {priority}")
+                    logger.info(f"[TaskManager] 任务 {task_id} 优先级已修改为 {priority}")
+                    # print(f"[TaskManager] 任务 {task_id} 优先级已修改为 {priority}")
         
         # 执行抢占式调度
         if preemptive:
@@ -370,8 +388,9 @@ class TaskManager:
             # 比较待执行任务和当前最低优先级任务的优先级
             if lowest_priority_worker and highest_priority_task.priority < lowest_priority:
                 # 待执行任务优先级更高，执行抢占
-                print(f"[Middleware] 执行抢占：暂停优先级较低的任务 {lowest_priority_worker.task.task_id}，执行优先级更高的任务 {highest_priority_task.task_id}")
-                
+                logger.info(f"[TaskManager] 执行抢占：暂停优先级较低的任务 {lowest_priority_worker.task.task_id}，执行优先级更高的任务 {highest_priority_task.task_id}")
+                # print(f"[TaskManager] 执行抢占：暂停优先级较低的任务 {lowest_priority_worker.task.task_id}，执行优先级更高的任务 {highest_priority_task.task_id}")
+
                 # 暂停当前最低优先级的任务
                 task_id_to_pause = lowest_priority_worker.task.task_id
                 
@@ -385,8 +404,8 @@ class TaskManager:
                 # 将任务添加到待执行队列
                 with self.queue_lock:
                     heapq.heappush(self.pending_queue, lowest_priority_worker.task)
-                
-                print(f"[Middleware] 任务 {task_id_to_pause} 已暂停并移至待执行队列")
+                logger.info(f"[TaskManager] 任务 {task_id_to_pause} 已暂停并移至待执行队列")
+                # print(f"[TaskManager] 任务 {task_id_to_pause} 已暂停并移至待执行队列")
 
     def run(self):
         """启动调度器"""
@@ -394,7 +413,8 @@ class TaskManager:
         self.scheduler_thread = threading.Thread(target=self._scheduler_loop)
         self.scheduler_thread.daemon = True
         self.scheduler_thread.start()
-        print("[Middleware] 调度器已启动")
+        logger.info("[TaskManager] 调度器已启动")
+        # print("[TaskManager] 调度器已启动")
 
     def _scheduler_loop(self):
         """调度器主循环"""
@@ -403,46 +423,23 @@ class TaskManager:
             with self.worker_lock:
                 if len(self.workers) < self.max_workers:
                     # 检查是否有待执行的任务
-                    try:
-                        task = self.dequeue()
-                        # 根据任务类型创建不同的worker
-                        if task.type == ExecutionType.THREAD:
-                            from worker import LangGraphWorker
-                            worker = LangGraphWorker(task, self, graphType="Chat", db_path=self.db_path)
-                            self.workers[task.task_id] = worker
-                            # 添加到线程池
-                            self.executor.submit(worker.run)
-                            # TODO 可以添加回调处理任务完成后的清理
-                            # future.add_done_callback()
-                            print(f"[Middleware] 任务 {task.task_id} 已分配给线程worker")
-                        elif task.type == ExecutionType.COROUTINE:
-                            # 检查任务配置中的任务类型
-                            task_type = task.config.get("task_type")
-                            if task_type == "research_write":
-                                from worker import AsyncResearchWritingWorker
-                                worker = AsyncResearchWritingWorker(task, self, db_path=self.db_path)
-                                self.workers[task.task_id] = worker
-                                # 将协程提交到全局事件循环
-                                future = asyncio.run_coroutine_threadsafe(worker.run(), self.event_loop)
-                                # 保存 asyncio.Task 引用
-                                worker.set_running_task(future)
-                                print(f"[Middleware] 任务 {task.task_id} 已分配给研究-写作协程worker")
-                            else:
-                                from worker import AsyncLangGraphWorker
-                                worker = AsyncLangGraphWorker(task, self, db_path=self.db_path)
-                                self.workers[task.task_id] = worker
-                                # 将协程提交到全局事件循环
-                                future = asyncio.run_coroutine_threadsafe(worker.run(), self.event_loop)
-                                # 保存 asyncio.Task 引用
-                                worker.set_running_task(future)
-                                print(f"[Middleware] 任务 {task.task_id} 已分配给协程worker")
-                    except IndexError:
-                        # 待执行队列为空
-                        pass
+                    task = self.dequeue()
+                    if task:
+                        worker = AsyncBaseWorker(task, self)
+                        self.workers[task.task_id] = worker
+                        # 将协程提交到全局事件循环
+                        future = asyncio.run_coroutine_threadsafe(worker.run(), self.event_loop)
+                        # 保存 asyncio.Task 引用
+                        worker.set_running_task(future)
+                        logger.info(f"[TaskManager] 任务 {task.task_id} 已分配给协程worker")
+                        # print(f"[TaskManager] 任务 {task.task_id} 已分配给协程worker")
             # 短暂休眠，避免CPU占用过高
             time.sleep(0.1)
 
     def close(self):
+        """关闭调度器"""
+        logger.info("[TaskManager] 调度器已关闭")
+        # print("[TaskManager] 调度器已关闭")
         self.running = False
         # 暂停所有正在运行的任务
         with self.worker_lock:
