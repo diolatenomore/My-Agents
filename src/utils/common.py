@@ -1,23 +1,28 @@
 import logging
 from typing import Any
 
+from langchain_core.messages import AIMessage
+
+
 def extract_content(response: Any) -> str:
     """提取响应内容"""
+    if isinstance(response, str):
+        return response
+    if isinstance(response, AIMessage):
+        return str(response.content) if response.content else ""
     if isinstance(response, dict):
-        if "messages" in response:
-            messages = response["messages"]
-            if messages:
-                return str(messages[-1])
-        elif "result" in response:
-            return str(response["result"])
-        else:
-            return str(response)
-    else:
-        # 处理LangChain响应对象
-        if hasattr(response, 'content'):
-            return response.content
-        # 处理其他对象
-        return str(response)
+        # 尝试提取常见字段
+        if "content" in response:
+            return str(response["content"])
+        if "messages" in response and isinstance(response["messages"], list):
+            # 取最后一条 AI 消息
+            for msg in reversed(response["messages"]):
+                if isinstance(msg, AIMessage):
+                    return str(msg.content)
+                if isinstance(msg, dict) and msg.get("type") == "ai":
+                    return str(msg.get("content", ""))
+    # 其他类型转字符串
+    return str(response)
 
 def setup_logger(name: str) -> logging.Logger:
     """设置日志记录器"""
