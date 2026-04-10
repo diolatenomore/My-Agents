@@ -1,6 +1,7 @@
 import os
 from langchain_core.tools import tool
 from tavily import TavilyClient
+import aiofiles
 
 from config import AGENT_WORKSPACE_PATH
 
@@ -22,8 +23,8 @@ async def write_file(filepath: str, content: str, append: bool = False) -> str:
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
     mode = "a" if append else "w"
-    with open(filepath, mode, encoding="utf-8") as f:
-        f.write(content)
+    async with aiofiles.open(filepath, mode, encoding="utf-8") as f:
+        await f.write(content)
 
     return f"✅ 已写入 {filepath}，共 {len(content)} 字"
 
@@ -32,8 +33,8 @@ async def read_file(filepath: str) -> str:
     """读取文件内容"""
     print(f"read_file {filepath}....")
     try:
-        with open(f"{AGENT_WORKSPACE_PATH}/{filepath}", "r", encoding="utf-8") as f:
-            return f.read()
+        async with aiofiles.open(f"{AGENT_WORKSPACE_PATH}/{filepath}", "r", encoding="utf-8") as f:
+            return await f.read()
     except FileNotFoundError:
         return f"错误：文件不存在"
     except Exception as e:
