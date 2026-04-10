@@ -4,7 +4,7 @@ _project_root = os.path.dirname(os.path.abspath(__file__))  # 获取 src 目录
 _project_root = os.path.dirname(_project_root)  # 获取项目根目录
 
 # 模型配置
-MODEL = "deepseek-v3.2"
+MODEL = "qwen2.5-vl-3b-instruct"
 
 # checkpoint数据库配置
 CHECKPOINT_DB_PATH = os.path.join(_project_root, "workspace/checkpoints.db")

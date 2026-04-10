@@ -6,7 +6,7 @@ from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
 
 from config import MAX_WORKERS, CHECKPOINT_DB_PATH
-from models.task import Task, TaskStatus, ExecutionType
+from models.task import Task, TaskStatus, ExecutionType, Priority
 from scheduler.worker import BaseWorker, AsyncBaseWorker
 from utils.common import logger
 
@@ -150,7 +150,7 @@ class TaskManager:
                     heapq.heappush(self.paused_queue, task)
                 logger.info(f"[TaskManager] 任务 {task_id} 已暂停并移至暂停队列")
                 # print(f"[TaskManager] 任务 {task_id} 已暂停并移至暂停队列")
-                return
+                return f"任务 {task_id} 已暂停并移至暂停队列"
 
         # 若不在执行中，检查是否在待执行队列
         with self.queue_lock:
@@ -164,10 +164,11 @@ class TaskManager:
                     heapq.heappush(self.paused_queue, task)
                     logger.info(f"[TaskManager] 任务 {task_id} 已从待执行队列暂停")
                     # print(f"[TaskManager] 任务 {task_id} 已从待执行队列暂停")
-                    return
+                    return f"任务 {task_id} 已暂停并移至暂停队列"
 
-        logger.info(f"[TaskManager] 任务 {task_id} 不存在或未在执行/待执行")
+        logger.info(f"[TaskManager] 任务 {task_id} 不存在或未执行/待执行")
         # print(f"[TaskManager] 任务 {task_id} 不存在或未在执行/待执行")
+        return f"任务 {task_id} 不存在或未执行/待执行"
 
     def resume_task(self, task_id, preemptive: bool = False):
         """
@@ -202,60 +203,76 @@ class TaskManager:
             else:
                 logger.info(f"[TaskManager] 任务 {task_id} 不存在或未暂停")
                 # print(f"[TaskManager] 任务 {task_id} 不存在或未暂停")
-        
+
         # 实现抢占式逻辑（在锁外部执行，因为锁不是可重入的）
-        if preemptive and task_found:
-            self._perform_preemption()
+        if task_found:
+            if preemptive:
+                self._perform_preemption()
+            return f"任务 {task_id} 已恢复并移至待执行队列"
+        else:
+            return f"任务 {task_id} 不存在或未暂停"
 
     def delete_task(self, task_id):
         """删除任务"""
+        # 如果任务已完成则清理结果
+        with self.result_lock:
+            if task_id in self.results:
+                del self.results[task_id]
+                logger.info(f"[TaskManager] 任务 {task_id} 的结果已清理")
+                # print(f"[TaskManager] 任务 {task_id} 的结果已清理")
+                return f"任务 {task_id} 已完成，结果已清理"
+
+        task_found = False
+        result = None
         # 首先检查任务是否在执行中
         with self.worker_lock:
             if task_id in self.workers:
                 worker = self.workers[task_id]
                 worker.cancel()
                 del self.workers[task_id]
-                logger.info(f"[TaskManager] 任务 {task_id} 已从worker中删除")
-                # print(f"[TaskManager] 任务 {task_id} 已从worker中删除")
-        
-        # 检查任务是否在待执行队列中
-        with self.queue_lock:
-            task_found = False
-            # 检查待执行队列
-            for i, task in enumerate(self.pending_queue):
-                if task.task_id == task_id:
-                    self.pending_queue.pop(i)
-                    heapq.heapify(self.pending_queue)
-                    logger.info(f"[TaskManager] 任务 {task_id} 已从待执行队列中删除")
-                    # print(f"[TaskManager] 任务 {task_id} 已从待执行队列中删除")
-                    task_found = True
-                    break
-            
-            # 如果不在待执行队列，检查暂停队列
-            if not task_found:
-                for i, task in enumerate(self.paused_queue):
-                    if task.task_id == task_id:
-                        self.paused_queue.pop(i)
-                        heapq.heapify(self.paused_queue)
-                        logger.info(f"[TaskManager] 任务 {task_id} 已从暂停队列中删除")
-                        # print(f"[TaskManager] 任务 {task_id} 已从暂停队列中删除")
-                        task_found = True
-                        break
-        # 如果任务正在执行，先取消
-        with self.worker_lock:
-            if task_id in self.workers:
-                self.workers[task_id].cancel()
-                del self.workers[task_id]
+
+                result = f"任务 {task_id} 正在执行，已取消并清理worker"
+                task_found = True
+
                 logger.info(f"[TaskManager] 任务 {task_id} 正在执行，已取消并清理worker")
                 # print(f"[TaskManager] 任务 {task_id} 正在执行，已取消并清理worker")
-        # 清理结果
-        with self.result_lock:
-            if task_id in self.results:
-                del self.results[task_id]
-                logger.info(f"[TaskManager] 任务 {task_id} 的结果已清理")
-                # print(f"[TaskManager] 任务 {task_id} 的结果已清理")
 
-    def change_priority(self, task_id: str, priority: int, preemptive: bool = False):
+        # 检查任务是否在待执行队列中
+        if not task_found:
+            with self.queue_lock:
+                # 检查待执行队列
+                for i, task in enumerate(self.pending_queue):
+                    if task.task_id == task_id:
+                        self.pending_queue.pop(i)
+                        heapq.heapify(self.pending_queue)
+
+                        task_found = True
+                        result = f"任务 {task_id} 已从待执行队列中删除"
+
+                        logger.info(f"[TaskManager] 任务 {task_id} 已从待执行队列中删除")
+                        # print(f"[TaskManager] 任务 {task_id} 已从待执行队列中删除")
+            
+        # 检查任务是否在暂停队列中
+        if not task_found:
+            for i, task in enumerate(self.paused_queue):
+                if task.task_id == task_id:
+                    self.paused_queue.pop(i)
+                    heapq.heapify(self.paused_queue)
+
+                    task_found = True
+                    result = f"任务 {task_id} 已从暂停队列中删除"
+
+                    logger.info(f"[TaskManager] 任务 {task_id} 已从暂停队列中删除")
+                    # print(f"[TaskManager] 任务 {task_id} 已从暂停队列中删除")
+
+        if task_found:
+            return result
+        else:
+            return f"任务 {task_id} 不存在"
+
+
+
+    def change_priority(self, task_id: str, priority: Priority, preemptive: bool = False):
         """
         改变任务优先级
         
@@ -280,12 +297,12 @@ class TaskManager:
         if status is None:
             logger.info(f"[TaskManager] 任务 {task_id} 不存在")
             # print(f"[TaskManager] 任务 {task_id} 不存在")
-            return
+            return f"任务 {task_id} 不存在"
         
         if status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.ERROR):
             logger.info(f"[TaskManager] 任务 {task_id} 已完成/取消/错误，无法修改优先级")
             # print(f"[TaskManager] 任务 {task_id} 已完成/取消/错误，无法修改优先级")
-            return
+            return f"任务 {task_id} 已完成/取消/错误，无法修改优先级"
         
         # 根据任务状态决定如何修改优先级
         # 任务正在执行
@@ -349,6 +366,8 @@ class TaskManager:
         # 执行抢占式调度
         if preemptive:
             self._perform_preemption()
+
+        return f"任务 {task_id} 优先级已修改为 {priority}"
     
     def _perform_preemption(self):
         """

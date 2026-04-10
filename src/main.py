@@ -1,9 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query, Path
 from langchain_community.chat_models import ChatTongyi
-from pydantic import BaseModel
 import uuid
-
 from config import MODEL
+from utils.common import extract_content
+from models.http_dtos import ChatRequest, ChatResponse, GetTaskStatusResponse, TaskChangeResponse, \
+    UpdateTaskPriorityRequest, GetStatsResponse, TaskManagerStatus
 from scheduler.classifier import Classifier
 from scheduler.task_manager import TaskManager
 from models.task import Task, ExecutionType, TaskType, Priority
@@ -15,8 +16,16 @@ task_manager = TaskManager()
 task_manager.run()
 
 
-@app.post('/api/chat')
-async def chat(query:str):
+@app.post('/api/chat', response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    query = request.query
+    if not query or query.strip() == "":
+        return ChatResponse(
+            code=401,
+            message="参数不能为空",
+            type="error"
+        )
+
     # 1、把query交给分类器
     decision = await Classifier.classify(query)
 
@@ -26,7 +35,11 @@ async def chat(query:str):
         model = ChatTongyi(model=MODEL)
         messages = [{"role": "user", "content": query}]
         response = model.invoke(messages)
-        return {"result": response}
+        return ChatResponse(
+            code=200,
+            message=extract_content(response),
+            type="chat"
+        )
     else:
         task_id = str(uuid.uuid4())
         task = Task(
@@ -36,11 +49,14 @@ async def chat(query:str):
             priority=Priority.P2
         )
         task_manager.enqueue(task)
-        return {"result": f"任务已创建，task_id为{task_id}"}
-    pass
+        return ChatResponse(
+            code=200,
+            message=f"任务已创建, task_id:{task_id}",
+            type="mission"
+        )
 
-
-@app.post('/api/tasks', status_code=201)
+# 暂时不用
+# @app.post('/api/tasks', status_code=201)
 async def create_task(task_data):
     """创建新任务"""
     try:
@@ -73,93 +89,91 @@ async def create_task(task_data):
         raise HTTPException(status_code=400, detail=f'创建任务失败: {str(e)}')
 
 
-@app.get('/api/tasks/{task_id}')
-async def get_task_status(task_id: str):
+@app.get('/api/tasks/{task_id}', response_model=GetTaskStatusResponse)
+async def get_task_status(task_id: str = Path(...)):
     """获取任务状态"""
     try:
         status = task_manager.get_task_status(task_id)
         result = task_manager.get_result(task_id)
 
-        return {
-            'task_id': task_id,
-            'status': str(status),
-            'result': result
-        }
+        return GetTaskStatusResponse(
+            code=200,
+            status=status,
+            result=result
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f'获取任务状态失败: {str(e)}')
 
 
-@app.post('/api/tasks/{task_id}/pause')
-async def pause_task(task_id: str):
+@app.post('/api/tasks/{task_id}/pause', response_model=TaskChangeResponse)
+async def pause_task(task_id: str = Path(...)):
     """暂停任务"""
     try:
-        task_manager.pause_task(task_id)
-        return {
-            'task_id': task_id,
-            'message': f'任务 {task_id} 已暂停'
-        }
+        result = task_manager.pause_task(task_id)
+        return TaskChangeResponse(
+            code=200,
+            message=result
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f'暂停任务失败: {str(e)}')
 
 
-@app.post('/api/tasks/{task_id}/resume')
-async def resume_task(task_id: str):
+@app.post('/api/tasks/{task_id}/resume', response_model=TaskChangeResponse)
+async def resume_task(task_id: str = Path(...)):
     """恢复任务"""
     try:
-        task_manager.resume_task(task_id)
-        return {
-            'task_id': task_id,
-            'message': f'任务 {task_id} 已恢复'
-        }
+        result = task_manager.resume_task(task_id)
+        return TaskChangeResponse(
+            code=200,
+            message=result
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f'恢复任务失败: {str(e)}')
 
 
-@app.delete('/api/tasks/{task_id}')
-async def delete_task(task_id: str):
+@app.delete('/api/tasks/{task_id}', response_model=TaskChangeResponse)
+async def delete_task(task_id: str = Path(...)):
     """删除任务"""
     try:
-        task_manager.delete_task(task_id)
-        return {
-            'task_id': task_id,
-            'message': f'任务 {task_id} 已删除'
-        }
+        result = task_manager.delete_task(task_id)
+        return TaskChangeResponse(
+            code=200,
+            message=result
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f'删除任务失败: {str(e)}')
 
 
-@app.put('/api/tasks/{task_id}/priority')
-async def update_task_priority(task_id: str, priority_data):
+@app.put('/api/tasks/{task_id}/priority', response_model=TaskChangeResponse)
+async def update_task_priority(priority_data: UpdateTaskPriorityRequest, task_id: str = Path(...)):
     """更新任务优先级"""
     try:
         priority = priority_data.priority
-        if priority is None:
-            raise HTTPException(status_code=400, detail='优先级不能为空')
-
-        task_manager.change_priority(task_id, priority)
-        return {
-            'task_id': task_id,
-            'message': f'任务 {task_id} 优先级已更新为 {priority}'
-        }
+        result = task_manager.change_priority(task_id, priority)
+        return TaskChangeResponse(
+            code=200,
+            message=result
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f'更新任务优先级失败: {str(e)}')
 
 
-@app.get('/api/stats')
+@app.get('/api/stats', response_model=GetStatsResponse)
 async def get_stats():
     """获取系统状态"""
     try:
         # 简单统计信息
-        stats = {
+        data = {
             'running': task_manager.running,
             'max_workers': task_manager.max_workers,
             'pending_tasks': len(task_manager.pending_queue),
             'paused_tasks': len(task_manager.paused_queue),
             'active_workers': len(task_manager.workers)
         }
-        return {
-            'stats': stats
-        }
+        return GetStatsResponse(
+            code=200,
+            data=TaskManagerStatus(**data)
+        )
     except Exception as e:
         raise HTTPException(status_code=400, detail=f'获取系统状态失败: {str(e)}')
 
