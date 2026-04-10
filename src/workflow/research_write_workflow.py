@@ -1,39 +1,16 @@
+from typing import Any, Dict, Tuple
+
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
+from langchain_community.chat_models import ChatTongyi
 from langgraph.graph import StateGraph
-from langgraph.constants import START, END
-from typing import Optional, Dict, Any, TypedDict, Annotated, Sequence, Tuple
-from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, BaseMessage
-import operator
-from langgraph.types import interrupt
-from langchain_community.chat_models.tongyi import ChatTongyi
+from langgraph.constants import END
 
 from agents.research_write import RESEARCH_PROMPT, WRITE_PROMPT
-from config import AGENT_WORKSPACE_PATH
-from config import MODEL
-from models.task import TaskType
+from config import AGENT_WORKSPACE_PATH, MODEL
 from models.state import ResearchWriteState
-from tools.research_write_tools import read_file, write_file, tavily_search
+from tools.research_write_tools import tavily_search, write_file, read_file
 from utils.common import extract_content
-
-class GraphBuilder:
-    """
-    Graph构建器
-    负责创建和配置LangGraph
-    """
-
-    @staticmethod
-    def create_graph(task_type: TaskType, query: str) -> Tuple[StateGraph, Dict[str, Any]]:
-        mapping = {
-            TaskType.RESEARCH_WRITE: create_research_write_graph,
-            TaskType.FILE_RW: create_file_rw_graph,
-            TaskType.AUTO_PLAN: create_auto_plan_graph,
-        }
-        if task_type in mapping:
-            return mapping[task_type](query)
-        else:
-            return create_default_graph(query)
-            # raise ValueError(f"不支持的任务类型: {task_type}")
 
 
 def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]:
@@ -188,16 +165,3 @@ def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]
     }
 
     return workflow, initial_state
-
-
-def create_file_rw_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]:
-    pass
-
-
-def create_auto_plan_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]:
-    pass
-
-
-def create_default_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]:
-    pass
-
