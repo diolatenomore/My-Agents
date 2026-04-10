@@ -13,6 +13,10 @@ def extract_content(response: Any) -> str:
         else:
             return str(response)
     else:
+        # 处理LangChain响应对象
+        if hasattr(response, 'content'):
+            return response.content
+        # 处理其他对象
         return str(response)
 
 def setup_logger(name: str) -> logging.Logger:

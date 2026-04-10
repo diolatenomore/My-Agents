@@ -2,6 +2,9 @@ import os
 from langchain_core.tools import tool
 from tavily import TavilyClient
 
+from config import AGENT_WORKSPACE_PATH
+
+
 @tool
 async def tavily_search(query: str, max_results: int = 5) -> str:
     """使用 Tavily 搜索引擎查找最新信息"""
@@ -15,7 +18,7 @@ async def tavily_search(query: str, max_results: int = 5) -> str:
 async def write_file(filepath: str, content: str, append: bool = False) -> str:
     """将结果写入文件"""
     print(f"write_file {filepath} {append}....")
-    filepath = f"./agent_workspace/{filepath}"
+    filepath = f"{AGENT_WORKSPACE_PATH}/{filepath}"
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
     mode = "a" if append else "w"
@@ -29,7 +32,7 @@ async def read_file(filepath: str) -> str:
     """读取文件内容"""
     print(f"read_file {filepath}....")
     try:
-        with open(f"./agent_workspace/{filepath}", "r", encoding="utf-8") as f:
+        with open(f"{AGENT_WORKSPACE_PATH}/{filepath}", "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         return f"错误：文件不存在"

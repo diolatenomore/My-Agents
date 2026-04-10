@@ -5,7 +5,7 @@ import asyncio
 from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
 
-from src.config import MAX_WORKERS, CHECKPOINT_DB_PATH
+from config import MAX_WORKERS, CHECKPOINT_DB_PATH
 from models.task import Task, TaskStatus, ExecutionType
 from scheduler.worker import BaseWorker, AsyncBaseWorker
 from utils.common import logger

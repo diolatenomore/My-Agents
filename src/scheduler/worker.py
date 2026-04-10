@@ -79,7 +79,7 @@ class AsyncBaseWorker(BaseWorker):
         """异步执行任务"""
         self.task.status = TaskStatus.RUNNING
         try:
-            # 使用 AsyncSqliteSaver
+        # 使用 AsyncSqliteSaver
             async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
                 self.graph = self.state_graph.compile(checkpointer=checkpointer)
                 # 执行工作流
@@ -97,13 +97,13 @@ class AsyncBaseWorker(BaseWorker):
                     self.task_manager.set_result(self.task.task_id, extract_content(response))
         except asyncio.CancelledError:
             # 捕获取消异常
-            logger.info(f"[{self.worker_id}] 任务被取消，保存断点", "使用task.cancel")
+            logger.info(f"[{self.worker_id}] 任务被取消，保存断点，使用task.cancel")
             self.task.status = TaskStatus.PAUSED
             # 任务被取消时，langgraph 会自动处理中断和状态保存
         except Exception as e:
+            logger.error(f"[{self.worker_id}] 任务执行出错: {str(e)}")
             # 检查任务状态，只有未暂停或取消的任务才会设置错误结果
             if self.task.status != TaskStatus.PAUSED and self.task.status != TaskStatus.CANCELLED:
-                logger.error(f"[{self.worker_id}] 任务执行出错: {str(e)}")
                 self.task.status = TaskStatus.ERROR
                 self.task_manager.set_result(self.task.task_id, f"Error: {str(e)}")
 

@@ -1,6 +1,6 @@
 from typing import Any
-from src.tools.base import Tool
-from src.vfs.operations import read_file, create_file, delete_file, rename_file, modify_file, copy_file, move_file, mkdir, delete_dir, rename_dir, copy_dir, move_dir
+from tools.base import Tool
+from vfs.operations import read_file, create_file, delete_file, rename_file, modify_file, copy_file, move_file, mkdir, delete_dir, rename_dir, copy_dir, move_dir
 
 class FileTools(Tool):
     """文件操作工具"""

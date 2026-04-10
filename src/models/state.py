@@ -28,6 +28,6 @@ class ResearchWriteState(TypedDict):
     task: str
     messages: Annotated[Sequence[BaseMessage], operator.add]
     research_file: Optional[str]
-    writing_file: Optional[str]
+    write_file: Optional[str]
     next: Optional[str]
     result: Optional[str]

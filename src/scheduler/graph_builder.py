@@ -10,7 +10,7 @@ from langchain_community.chat_models.tongyi import ChatTongyi
 
 from agents.research_write import RESEARCH_PROMPT, WRITE_PROMPT
 from config import AGENT_WORKSPACE_PATH
-from src.config import MODEL
+from config import MODEL
 from models.task import TaskType
 from models.state import ResearchWriteState
 from tools.research_write_tools import read_file, write_file, tavily_search
@@ -57,7 +57,7 @@ def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]
     tool_names = ["research", "write"]
 
     # 创建监督节点
-    def supervisor_node(state: ResearchWriteState) -> ResearchWriteState:
+    async def supervisor_node(state: ResearchWriteState) -> ResearchWriteState:
         model = ChatTongyi(model=MODEL)
         state_str = f"当前状态：\n- 研究结果：{'None' if not state.get('research_file') else '已完成'}\n- 写作结果：{'None' if not state.get('write_file') else '已完成'}"
         print(state_str)
@@ -97,7 +97,7 @@ def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]
         if state.get("task"):
             messages.append({"role": "user", "content": f"任务：{state['task']}"})
         # 调用模型
-        result = model.invoke(messages)
+        result = await model.ainvoke(messages)
         print(f"模型返回：{extract_content(result)}")
 
         # 检查是否有工具调用请求
@@ -121,13 +121,13 @@ def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]
         return {"messages": [result], "next": "end", "result": state.get("write_file")}
 
     # 研究节点
-    def research_node(state: ResearchWriteState) -> ResearchWriteState:
+    async def research_node(state: ResearchWriteState) -> ResearchWriteState:
         """调用研究工具收集信息"""
         task = state["task"]
         # 模拟研究过程
-        research_result = research_agent.invoke({
+        research_result = await research_agent.ainvoke({
             "messages": [
-                {"role": "user", "content": f"搜集'{task}'的相关信息"}
+                {"role": "user", "content": f"这是用户的输入：'{task}'\n请搜集相关信息"}
             ]
         })
         # 使用 extract_content 函数提取纯文本内容
@@ -136,14 +136,14 @@ def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]
         return {"research_file": content}
 
     # 写作节点
-    def write_node(state: ResearchWriteState) -> ResearchWriteState:
+    async def write_node(state: ResearchWriteState) -> ResearchWriteState:
         """调用写作工具生成文章"""
         task = state["task"]
         research_file = state["research_file"]
         # 模拟写作过程
-        write_result = write_agent.invoke({
+        write_result = await write_agent.ainvoke({
             "messages": [
-                {"role": "user", "content": f'写一篇关于 "{task}" 的文章\n以下为研究结果的文件路径：""{research_file}""'}
+                {"role": "user", "content": f'这是用户的输入："{task}"\n请根据用户输入写一篇文章，以下为研究结果的文件路径：""{research_file}""'}
             ]
         })
         # 使用 extract_content 函数提取纯文本内容

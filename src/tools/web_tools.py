@@ -1,6 +1,6 @@
 from typing import Any, Dict
 import requests
-from src.tools.base import Tool
+from tools.base import Tool
 
 class WebTools(Tool):
     """网络操作工具"""
