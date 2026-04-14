@@ -3,7 +3,7 @@ import os
 from dataclasses import dataclass
 import sqlite3
 
-from config import DB_PATH
+from src.config import DB_PATH
 
 
 # TODO 有无必要把要写入数据库的记录先缓存起来，再批量写入数据库

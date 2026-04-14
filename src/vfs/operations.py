@@ -1,11 +1,11 @@
 import os
 from pathlib import Path
 
-from vfs.copy_mapping import CopyMapping, copy
-from vfs.diff_table import DiffRecord, OperationType, DiffTable
-from vfs.context_manager import get_current_task_id
-from vfs.staging_area import StagingArea
-from utils.vfs import check_file_path, check_dir_path
+from src.vfs.copy_mapping import CopyMapping, copy
+from src.vfs.diff_table import DiffRecord, OperationType, DiffTable
+from src.vfs.context_manager import get_current_task_id
+from src.vfs.staging_area import StagingArea
+from src.utils.vfs import check_file_path, check_dir_path
 
 """
 文件操作函数

@@ -6,7 +6,7 @@ from typing import Optional, Dict, List, Any
 from concurrent.futures import ThreadPoolExecutor
 
 from config import MAX_WORKERS, CHECKPOINT_DB_PATH
-from models.task import Task, TaskStatus, ExecutionType, Priority
+from models.task import Task, TaskStatus, Priority
 from scheduler.worker import BaseWorker, AsyncBaseWorker
 from utils.common import logger
 
@@ -14,7 +14,7 @@ from utils.common import logger
 
 class TaskManager:
     """
-    中间人/调度器
+    任务调度器
     管理任务队列、Worker 生命周期、资源调度
     """
 

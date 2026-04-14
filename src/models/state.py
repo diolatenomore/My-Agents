@@ -31,3 +31,11 @@ class ResearchWriteState(TypedDict):
     write_file: Optional[str]
     next: Optional[str]
     result: Optional[str]
+
+class FileOrganizeState(TypedDict):
+    messages: list[AnyMessage]
+    query: str
+    step: int
+    plan_result: str
+    execute_completed: bool
+    verify_result: str

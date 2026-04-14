@@ -1,8 +1,9 @@
 from langgraph.graph import StateGraph
 from typing import Dict, Any, Tuple
 
-from models.task import TaskType
-from workflow.research_write_workflow import create_research_write_graph
+from src.models.task import TaskType
+from src.workflow.research_write_workflow import create_research_write_graph
+from src.workflow.file_organize_workflow import create_file_organize_graph
 
 
 class GraphBuilder:
