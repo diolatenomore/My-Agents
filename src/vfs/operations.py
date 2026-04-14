@@ -5,24 +5,112 @@ from src.vfs.copy_mapping import CopyMapping, copy
 from src.vfs.diff_table import DiffRecord, OperationType, DiffTable
 from src.vfs.context_manager import get_current_task_id
 from src.vfs.staging_area import StagingArea
-from src.utils.vfs import check_file_path, check_dir_path
+from src.utils.vfs import check_file_path, check_dir_path, isfile, isdir
 
 """
 文件操作函数
 只要涉及创建、修改文件/目录，都会放到暂存区
 """
 
+# TODO 函数要返回字符串结果
 # TODO 在此阶段要加上操作约束，比如不能创建已存在的文件/目录，不能删除不存在的文件/目录、不能再删除之后操作该文件/目录（除非再创建）
 
+def list_dir(source_path: str):
+    """列出目录下的所有文件和子目录"""
+    # 路径合法性检查
+    result = check_dir_path(source_path)
+    if result:
+        return result
+
+    # 检查目录是否存在
+    staging_path = StagingArea.get_staging_dir_path(source_path)
+    if staging_path is None:
+        # 检查是否被删除了
+        if StagingArea.is_deleted_dir(source_path):
+            return "目录已删除"
+        # 检查原目录是否存在
+        if not os.path.exists(source_path):
+            return "目录不存在"
+
+    # 从真实文件系统获取目录内容
+    real_files = set()
+    real_dirs = set()
+    for item in os.listdir(source_path):
+        item_path = os.path.join(source_path, item)
+        if os.path.isfile(item_path):
+            real_files.add(item)
+        elif os.path.isdir(item_path):
+            real_dirs.add(item)
+
+    # 从暂存区获取目录内容
+    staged_files = set()
+    staged_dirs = set()
+    deleted_files = set()
+    deleted_dirs = set()
+
+    # 遍历暂存区中的所有路径
+    for path in StagingArea.mapping:
+        # 检查是否是当前目录的直接子项
+        if path.startswith(source_path + "/"):
+            # 提取子项名称
+            relative_path = path[len(source_path) + 1:]
+            if "/" not in relative_path:
+                print(path)
+                print(isdir(path))
+                print(isfile(path))
+                if isfile(path):
+                    staged_files.add(relative_path)
+                elif isdir(path):
+                    staged_dirs.add(relative_path)
+
+    # 检查已删除的文件（不在映射中但被标记为删除的文件）
+    for path in StagingArea.deleted_mapping:
+        if StagingArea.deleted_mapping[path] and path.startswith(source_path + "/"):
+            relative_path = path[len(source_path) + 1:]
+            if "/" not in relative_path:
+                deleted_files.add(relative_path)
+
+    # 检查已删除的目录（不在映射中但被标记为删除的目录）
+    for path in StagingArea.deleted_dir_mapping:
+        if StagingArea.deleted_dir_mapping[path] and path.startswith(source_path + "/"):
+            relative_path = path[len(source_path) + 1:]
+            if "/" not in relative_path:
+                deleted_dirs.add(relative_path)
+
+    # 合并结果，排除已删除的项
+    final_files = (real_files | staged_files) - deleted_files
+    final_dirs = (real_dirs | staged_dirs) - deleted_dirs
+
+    # 构建返回结果
+    result = {
+        "files": sorted(list(final_files)),
+        "dirs": sorted(list(final_dirs))
+    }
+
+    return result
+
+
 def read_file(source_path: str):
-    # TODO 如果暂存区里有该文件，就返回暂存区里的内容，否则返回原文件内容
-    pass
+    # 如果暂存区里有该文件，就返回暂存区里的内容，否则返回原文件内容
+
+    # 检查路径是否存在（真实路径/虚拟路径——是否已删除）
+    staging_path = StagingArea.get_staging_path(source_path)
+    if staging_path is None:
+        # 检查是否被删除了
+        if StagingArea.is_deleted(source_path):
+            return "文件已删除"
+        # 检查原文件是否存在
+        if not os.path.exists(source_path):
+            return "文件不存在"
+    if staging_path:
+        return open(staging_path, "r").read()
+    else:
+        return open(source_path, "r").read()
+
 
 def create_file(source_path: str, content: str):
     """为了统一，这里把source_path作为目标路径"""
 
-    # TODO 何得到task_id？
-    # 目前思路是从上下文变量中获取task_id
     task_id = get_current_task_id()
 
     # 路径合法性检查
@@ -32,9 +120,9 @@ def create_file(source_path: str, content: str):
     # 检查路径是否存在
     staging_path = StagingArea.get_staging_path(source_path)
     if staging_path:
-        return "路径已存在"
+        return "命名冲突，文件已存在"
     elif os.path.exists(source_path):
-      return "路径已存在"
+        return "命名冲突，文件已存在"
 
     # 在暂存区为source_path分配一条路径
     staging_path = StagingArea.register(source_path)
@@ -47,6 +135,7 @@ def create_file(source_path: str, content: str):
     record = DiffRecord(task_id=task_id, operation_type=OperationType.CREATE_FILE, source_path=source_path)
     DiffTable.operate(record)
 
+
 def delete_file(source_path: str):
     task_id = get_current_task_id()
 
@@ -55,10 +144,10 @@ def delete_file(source_path: str):
     if staging_path is None:
         # 检查是否被删除了
         if StagingArea.is_deleted(source_path):
-            return "在暂存区中被删除"
+            return "文件已删除"
         # 检查原文件是否存在
         if not os.path.exists(source_path):
-            return "原路径不存在"
+            return "文件不存在"
 
     # 检查文件是否是被拷贝的对象并且未触发拷贝
     if CopyMapping.need_copied(source_path):
@@ -69,6 +158,7 @@ def delete_file(source_path: str):
 
     record = DiffRecord(task_id=task_id, operation_type=OperationType.DELETE_FILE, source_path=source_path)
     DiffTable.operate(record)
+
 
 def rename_file(source_path: str, target_path: str):
     task_id = get_current_task_id()
@@ -81,7 +171,7 @@ def rename_file(source_path: str, target_path: str):
         source_parent = ""
     if target_parent == "." or target_parent == "/":
         target_parent = ""
-    
+
     if source_parent != target_parent:
         return "跨目录重命名不支持"
 
@@ -93,28 +183,30 @@ def rename_file(source_path: str, target_path: str):
     # 处理target_path命名冲突
     target_staging_path = StagingArea.get_staging_path(target_path)
     if target_staging_path:
-        return "目标路径已存在"
+        return "命名冲突，目标路径已存在"
     elif os.path.exists(target_path):
-        return "目标路径已存在"
+        return "命名冲突，目标路径已存在"
 
     # 检查source_path是否存在
     source_staging_path = StagingArea.get_staging_path(source_path)
     if source_staging_path is None:
         # 检查是否被删除了
         if StagingArea.is_deleted(source_path):
-            return "原路径不存在"
+            return "原文件已删除"
         # 检查原文件是否存在
         if not os.path.exists(source_path):
-            return "原路径不存在"
+            return "原文件不存在"
         # 从暂存区获取一条路径
-        staging_path = StagingArea.register(source_path)
+        StagingArea.register(source_path)
 
     # 修改对应的路径映射关系
     StagingArea.rename(source_path, target_path)
     CopyMapping.rename(source_path, target_path)
 
-    record = DiffRecord(task_id=task_id, operation_type=OperationType.RENAME_FILE, source_path=source_path, target_path=target_path)
+    record = DiffRecord(task_id=task_id, operation_type=OperationType.RENAME_FILE, source_path=source_path,
+                        target_path=target_path)
     DiffTable.operate(record)
+
 
 def modify_file(source_path: str, content: str):
     task_id = get_current_task_id()
@@ -124,10 +216,10 @@ def modify_file(source_path: str, content: str):
     if staging_path is None:
         # 检查是否被删除了
         if StagingArea.is_deleted(source_path):
-            return "原路径不存在"
+            return "文件已删除"
         # 检查原文件是否存在
         if not os.path.exists(source_path):
-            return "原路径不存在"
+            return "文件不存在"
         # 从暂存区获取一条路径，并拷贝原文件
         staging_path = StagingArea.register(source_path)
         copy(source_path, staging_path)
@@ -145,6 +237,7 @@ def modify_file(source_path: str, content: str):
     record = DiffRecord(task_id=task_id, operation_type=OperationType.MODIFY_FILE, source_path=source_path)
     DiffTable.operate(record)
 
+
 def copy_file(source_path: str, target_path: str):
     task_id = get_current_task_id()
 
@@ -161,18 +254,18 @@ def copy_file(source_path: str, target_path: str):
     # 检查target_path是否存在
     target_staging_path = StagingArea.get_staging_path(target_path)
     if target_staging_path:
-        return "目标路径已存在"
+        return "命名冲突，目标路径已存在"
     elif os.path.exists(target_path):
-        return "目标路径已存在"
-
+        return "命名冲突，目标路径已存在"
     # 在暂存区为target_path分配一条路径
-    staging_path = StagingArea.register(target_path)
+    StagingArea.register(target_path)
 
     # 写入一条复制记录，用于写时复制
     CopyMapping.register(source_path, target_path)
 
     record = DiffRecord(task_id=task_id, operation_type=OperationType.CREATE_FILE, source_path=target_path)
     DiffTable.operate(record)
+
 
 def move_file(source_path: str, target_path: str):
     # TODO 待实现+优化，按照当前的机制，会立即触发拷贝，
@@ -182,6 +275,7 @@ def move_file(source_path: str, target_path: str):
     record2 = DiffRecord(task_id=task_id, operation_type=OperationType.DELETE_FILE, source_path=source_path)
 
     DiffTable.operate(record2)
+
 
 def mkdir(source_path: str):
     """为了统一，这里把source_path作为目标路径"""
@@ -195,15 +289,16 @@ def mkdir(source_path: str):
     # 检查路径是否存在
     target_staging_path = StagingArea.get_staging_dir_path(source_path)
     if target_staging_path:
-        return "目录已存在"
+        return "命名冲突，目录已存在"
     elif os.path.exists(source_path):
-        return "目录已存在"
+        return "命名冲突，目录已存在"
 
     # 在暂存区为source_path占位
     StagingArea.register_dir(source_path)
 
     record = DiffRecord(task_id=task_id, operation_type=OperationType.MKDIR, source_path=source_path)
     DiffTable.operate(record)
+
 
 def delete_dir(source_path: str):
     task_id = get_current_task_id()
@@ -228,6 +323,7 @@ def delete_dir(source_path: str):
     record = DiffRecord(task_id=task_id, operation_type=OperationType.DELETE_DIR, source_path=source_path)
     DiffTable.operate(record)
 
+
 def rename_dir(source_path: str, target_path: str):
     task_id = get_current_task_id()
 
@@ -239,7 +335,7 @@ def rename_dir(source_path: str, target_path: str):
         source_parent = ""
     if target_parent == "." or target_parent == "/":
         target_parent = ""
-    
+
     if source_parent != target_parent:
         return "跨目录重命名不支持"
 
@@ -251,19 +347,19 @@ def rename_dir(source_path: str, target_path: str):
     # 处理命名冲突，检查target_path是否存在
     target_staging_path = StagingArea.get_staging_dir_path(target_path)
     if target_staging_path:
-        return "目标目录已存在"
+        return "命名冲突，目标目录已存在"
     elif os.path.exists(target_path):
-        return "目标目录已存在"
+        return "命名冲突，目标目录已存在"
 
     # 检查source_path是否存在 （真实路径/虚拟路径——是否已删除）
     staging_path = StagingArea.get_staging_dir_path(source_path)
     if staging_path is None:
         # 检查是否被删除了
         if StagingArea.is_deleted_dir(source_path):
-            return "原目录不存在"
+            return "目录已删除"
         # 检查原目录是否存在
         if not os.path.exists(source_path):
-            return "原目录不存在"
+            return "目录不存在"
         # 从暂存区获取一条路径，并拷贝原目录
         staging_path = StagingArea.register_dir(source_path)
 
@@ -271,8 +367,10 @@ def rename_dir(source_path: str, target_path: str):
     StagingArea.rename_dir(source_path, target_path)
     CopyMapping.rename_dir(source_path, target_path)
 
-    record = DiffRecord(task_id=task_id, operation_type=OperationType.RENAME_DIR, source_path=source_path, target_path=target_path)
+    record = DiffRecord(task_id=task_id, operation_type=OperationType.RENAME_DIR, source_path=source_path,
+                        target_path=target_path)
     DiffTable.operate(record)
+
 
 def copy_dir(source_path: str, target_path: str):
     task_id = get_current_task_id()
@@ -280,7 +378,7 @@ def copy_dir(source_path: str, target_path: str):
     # 检查source_path是否存在 （真实路径）
     # 禁止拷贝原本不存在的文件（使用虚拟路径作为source_path）
     if not os.path.exists(source_path):
-        return "原路径不存在"
+        return "目录不存在"
 
     # 检查target_path路径合法性
     result = check_dir_path(target_path)
@@ -290,9 +388,9 @@ def copy_dir(source_path: str, target_path: str):
     # 处理命名冲突，检查target_path是否存在
     target_staging_path = StagingArea.get_staging_dir_path(target_path)
     if target_staging_path:
-        return "目标目录已存在"
+        return "命名冲突，目标目录已存在"
     elif os.path.exists(target_path):
-        return "目标目录已存在"
+        return "命名冲突，目标目录已存在"
 
     # 写入一条复制记录，用于写时复制
     CopyMapping.register_dir(source_path, target_path)
@@ -300,33 +398,36 @@ def copy_dir(source_path: str, target_path: str):
     # 递归写子目录和和文件的CREATE_FILE和MKDIR操作记录
     operations = []
     for root, dirs, files in os.walk(source_path):
-    # root: 当前遍历目录的完整路径      dirs: 当前目录下的子目录列表    files: 当前目录下的文件列表
+        # root: 当前遍历目录的完整路径      dirs: 当前目录下的子目录列表    files: 当前目录下的文件列表
         for dir_name in dirs:
             # 构造目标目录完整路径
-            source_dir = os.path.join(root, dir_name)           # 原目录完整路径
+            source_dir = os.path.join(root, dir_name)  # 原目录完整路径
             target_dir = source_dir.replace(source_path, target_path, 1)  # 目标目录完整路径
-            
+
             # 在暂存区为target_dir占位
             StagingArea.register_dir(target_dir)
             operations.append(DiffRecord(task_id=task_id, operation_type=OperationType.MKDIR, source_path=target_dir))
-            
+
         for file_name in files:
             # 构造目标文件完整路径
-            source_file = os.path.join(root, file_name)         # 原文件完整路径
+            source_file = os.path.join(root, file_name)  # 原文件完整路径
             target_file = source_file.replace(source_path, target_path, 1)  # 目标文件完整路径
-            
+
             # 在暂存区为target_file分配一条路径
             StagingArea.register(target_file)
-            operations.append(DiffRecord(task_id=task_id, operation_type=OperationType.CREATE_FILE, source_path=target_file))
+            operations.append(
+                DiffRecord(task_id=task_id, operation_type=OperationType.CREATE_FILE, source_path=target_file))
 
     # 批量写入操作记录
     DiffTable.operate_batch(operations)
+
 
 def move_dir(source_path: str, target_path: str):
     task_id = get_current_task_id()
 
     # TODO 待实现+优化，按照当前的机制，会立即触发拷贝
-    record1 = DiffRecord(task_id=task_id, operation_type=OperationType.COPY_DIR, source_path=source_path, target_path=target_path)
+    record1 = DiffRecord(task_id=task_id, operation_type=OperationType.COPY_DIR, source_path=source_path,
+                         target_path=target_path)
     record2 = DiffRecord(task_id=task_id, operation_type=OperationType.DELETE_DIR, source_path=source_path)
 
     DiffTable.operate_batch([record1, record2])
