@@ -3,7 +3,7 @@ from typing import Dict, Any, Tuple
 
 from src.models.task import TaskType
 from src.workflow.research_write_workflow import create_research_write_graph
-from src.workflow.file_organize_workflow import create_file_organize_graph
+from workflow.file_organize_workflow import create_file_organize_graph
 
 
 class GraphBuilder:
@@ -16,7 +16,7 @@ class GraphBuilder:
     def create_graph(task_type: TaskType, query: str) -> Tuple[StateGraph, Dict[str, Any]]:
         mapping = {
             TaskType.RESEARCH_WRITE: create_research_write_graph,
-            TaskType.FILE_RW: create_file_rw_graph,
+            TaskType.FILE_ORGANIZE: create_file_organize_graph,
             TaskType.AUTO_PLAN: create_auto_plan_graph,
         }
         if task_type in mapping:

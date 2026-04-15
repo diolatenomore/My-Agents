@@ -6,7 +6,7 @@ from langchain_community.chat_models import ChatTongyi
 from langgraph.graph import StateGraph
 from langgraph.constants import END
 
-from agents.research_write import RESEARCH_PROMPT, WRITE_PROMPT
+from agents.research_write_prompt import RESEARCH_PROMPT, WRITE_PROMPT
 from config import AGENT_WORKSPACE_PATH, MODEL
 from models.state import ResearchWriteState
 from tools.research_write_tools import tavily_search, write_file, read_file

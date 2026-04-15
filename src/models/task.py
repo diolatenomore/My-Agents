@@ -21,7 +21,7 @@ class ExecutionType(Enum):
 class TaskType(Enum):
     CHAT = "chat"
     RESEARCH_WRITE = "research_write"
-    FILE_RW = "file_rw"
+    FILE_ORGANIZE = "file_organize"
     AUTO_PLAN = "auto_plan"
 
 class Priority(Enum):
