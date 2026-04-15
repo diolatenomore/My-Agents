@@ -1,4 +1,5 @@
 import os
+import shutil
 
 # 常见的隐藏目录名
 common_hidden_dirs = {'.git', '.svn', '.hg', '.bzr', 
@@ -106,3 +107,19 @@ def isdir(path: str) -> bool:
 
     # 无扩展名, 认为是目录
     return True
+
+def copy(source_path: str, target_path: str):
+    """
+    拷贝文件
+
+    Args:
+        source_path: 源文件路径
+        target_path: 目标文件路径
+    """
+    # 确保目标目录存在
+    target_dir = os.path.dirname(target_path)
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir, exist_ok=True)
+
+    # 拷贝文件
+    shutil.copy2(source_path, target_path)

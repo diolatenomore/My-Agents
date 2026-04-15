@@ -3,7 +3,7 @@ import os
 from dataclasses import dataclass
 import sqlite3
 
-from config import DB_PATH
+from src.config import DB_PATH
 
 
 # TODO 有无必要把要写入数据库的记录先缓存起来，再批量写入数据库
@@ -35,7 +35,7 @@ class StagingArea:
         获取暂存区路径，如果已被删除或不存在则返回None
         """
         if not StagingArea.deleted_mapping.get(path, False) and path in StagingArea.mapping:
-            # 遍历deleted_dir_mapping，检查path是否在以删除的目录下
+            # 遍历deleted_dir_mapping，检查path是否在已删除的目录下
             for dir_path, is_deleted in StagingArea.deleted_dir_mapping.items():
                 if is_deleted and path.startswith(dir_path + "/"):
                     # 如果path在已删除的目录下，将deleted_mapping对应值设为True
@@ -164,12 +164,12 @@ class StagingArea:
         """
         删除暂存区路径（设置deleted为True）
         """
-        # 如果path在暂存区中，就删除暂存区中的文件
-        staging_path = StagingArea.get_staging_path(path)
-        if staging_path:
-            del StagingArea.mapping[path]
-            # TODO: 删除文件
-            # delete(staging_path)
+        # # 如果path在暂存区中，就删除暂存区中的文件
+        # staging_path = StagingArea.get_staging_path(path)
+        # if staging_path:
+        #     del StagingArea.mapping[path]
+        #     # TODO: 删除文件
+        #     # delete(staging_path)
 
         # 更新缓存中的删除状态
         StagingArea.deleted_mapping[path] = True

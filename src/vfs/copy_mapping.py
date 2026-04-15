@@ -6,25 +6,9 @@ import os
 
 from src.config import DB_PATH
 from src.vfs.staging_area import StagingArea
+from utils.vfs import copy
 
 # TODO 有无必要把要写入数据库的记录先缓存起来，再批量写入数据库
-
-def copy(source_path: str, target_path: str):
-    """
-    拷贝文件
-
-    Args:
-        source_path: 源文件路径
-        target_path: 目标文件路径
-    """
-    # 确保目标目录存在
-    target_dir = os.path.dirname(target_path)
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir, exist_ok=True)
-
-    # 拷贝文件
-    shutil.copy2(source_path, target_path)
-
 
 @dataclass
 class CopyRecord:
@@ -136,7 +120,7 @@ class CopyMapping:
         """拷贝所有未被拷贝的文件并修改标记"""
         records = CopyMapping.get_from_db(task_id=CopyMapping.task_id, source_path=source_path)
         # 如果原文件有暂存区路径则使用
-        source_staging_path = StagingArea.get_staging_path(source_path)
+        source_staging_path = StagingArea.mapping.get(source_path)  # 直接获取路径，不判断是否被删除
         path = source_staging_path if source_staging_path else source_path
         
         # 处理精确拷贝情况（source_path作为copy_file操作的原路径）
@@ -210,7 +194,7 @@ class CopyMapping:
                 # 如果暂存区路径不真实存在则拷贝文件到暂存区
                 if not os.path.exists(target_staging_path):
                     # 如果原文件有暂存区路径则使用
-                    source_staging_path = StagingArea.get_staging_path(source_file)
+                    source_staging_path = StagingArea.mapping.get(source_file)  # 直接获取路径，不判断是否被删除
                     path = source_staging_path if source_staging_path else source_file
                     # 拷贝文件
                     copy(path, target_staging_path)
@@ -263,7 +247,7 @@ class CopyMapping:
                 return
             
             # 如果原文件有暂存区路径则使用
-            staging_path_source = StagingArea.get_staging_path(record[0].source_path)
+            staging_path_source = StagingArea.mapping.get(record[0].source_path)  # 直接获取路径，不判断是否被删除
             path = staging_path_source if staging_path_source else record[0].source_path
             
             copy(path, StagingArea.get_staging_path(target_path))
@@ -306,7 +290,7 @@ class CopyMapping:
                     target_staging_path = StagingArea.get_staging_path(target_path)
                     if not os.path.exists(target_staging_path):    
                         # 如果原文件有暂存区路径则使用
-                        staging_path_source = StagingArea.get_staging_path(source_path)
+                        staging_path_source = StagingArea.mapping.get(source_path)  # 直接获取路径，不判断是否被删除
                         path = staging_path_source if staging_path_source else source_path
                         # 拷贝文件
                         copy(path, target_staging_path)
