@@ -6,20 +6,19 @@ from langchain_core.prompts import PromptTemplate
 from langgraph.graph import StateGraph
 from langgraph.constants import END
 
-from agents.file_organize_prompt import PLAN_AGENT_PROMPT, EXECUTE_AGENT_PROMPT, VERIFY_AGENT_PROMPT, \
+from src.agents.file_organize_prompt import PLAN_AGENT_PROMPT, EXECUTE_AGENT_PROMPT, VERIFY_AGENT_PROMPT, \
     PLAN_INPUT_TEMPLATE, EXECUTE_INPUT_TEMPLATE
-from config import MODEL
-from models.state import FileOrganizeState
-from models.task import Task
-from tools.file_orgranzie_tools import (list_dir, read_file, create_file, delete_file,
+from src.config import MODEL
+from src.models.state import FileOrganizeState
+from src.models.task import Task
+from src.tools.file_orgranzie_tools import (list_dir, read_file, create_file, delete_file,
                                         rename_file, modify_file, copy_file, move_file, mkdir,
                                         delete_dir, copy_dir, rename_dir, move_dir)
 import src.vfs.operations as ops
 from src.utils.common import logger
-from src.vfs.context_manager import set_current_task_id
-from src.vfs.copy_mapping import get_copy_mapping
-from src.vfs.staging_area import get_staging_area
-
+from src.vfs.task_context import set_current_task_id, clean_current_task_id
+from src.vfs.copy_mapping import CopyMapping
+from src.vfs.staging_area import StagingArea
 
 # TODO 不同agent的messages应该不同
 # 方法1: 使用独立字段xxxx_messages
@@ -46,15 +45,11 @@ tools_by_name = {
 }
 
 
-
-#TODO 最后需要清空当前task_id
 def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
     # 设置task_id并初始化
     set_current_task_id(task.task_id)
-    staging_area = get_staging_area()
-    staging_area.load(task.task_id)
-    copy_mapping = get_copy_mapping()
-    copy_mapping.load(task.task_id)
+    StagingArea.load(task.task_id)
+    CopyMapping.load(task.task_id)
 
     async def plan_node(state: FileOrganizeState) -> FileOrganizeState:
         model = ChatTongyi(model=MODEL)
@@ -85,10 +80,11 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
     async def plan_tool_node(state: FileOrganizeState) -> FileOrganizeState:
         result = []
         for tool_call in state["messages"][-1].tool_calls:
-            logger.info(f"plan阶段  工具: {tool_call['name']}    参数: {tool_call['args']}")
             tool = tools_by_name[tool_call["name"]]
             observation = tool(**tool_call["args"])
             result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
+            logger.info(f"plan阶段  工具: {tool_call['name']}    参数: {tool_call['args']}")
+            logger.info(f"工具返回：{observation}")
         return {"messages": state["messages"] + result, "step": state["step"] + 1}
 
     def should_continue_plan(state: FileOrganizeState):
@@ -130,11 +126,13 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
     async def execute_tool_node(state: FileOrganizeState) -> FileOrganizeState:
         result = []
         for tool_call in state["messages"][-1].tool_calls:
-            logger.info(f"execute阶段  工具: {tool_call['name']}    参数: {tool_call['args']}")
             tool = tools_by_name[tool_call["name"]]
-            observation = tool(**tool_call["args"], _task_id=state["task_id"])  # 注入task_id
+            # observation = tool(**tool_call["args"], _task_id=state["task_id"])  # 注入task_id
+            observation = tool(**tool_call["args"])
             # observation = await tool.ainvoke({**tool_call["args"], "_task_id": task.task_id})  # 注入task_id
             result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
+            logger.info(f"execute阶段  工具: {tool_call['name']}    参数: {tool_call['args']}")
+            logger.info(f"工具返回{observation}")
         return {"messages": state["messages"] + result, "step": state["step"] + 1}
 
     def should_continue_execute(state: FileOrganizeState):
@@ -190,6 +188,12 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
 
         return "verify_tool_node"
 
+    def end_node(state: FileOrganizeState) -> FileOrganizeState:
+        """进行资源的清理"""
+        StagingArea.clear()
+        CopyMapping.clear()
+        clean_current_task_id()
+
     workflow = StateGraph(FileOrganizeState)
     workflow.add_node("plan", plan_node)
     workflow.add_node("plan_tool_node", plan_tool_node)
@@ -197,6 +201,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
     workflow.add_node("execute_tool_node", execute_tool_node)
     workflow.add_node("verify", verify_node)
     workflow.add_node("verify_tool_node", verify_tool_node)
+    workflow.add_node("end_node", end_node)
 
     workflow.set_entry_point("plan")
     workflow.add_conditional_edges(
@@ -223,10 +228,11 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
         {
             "verify_tool_node": "verify_tool_node",
             "execute": "execute",
-            "end": END
+            "end": "end_node"
         }
     )
     workflow.add_edge("verify_tool_node", "verify")
+    workflow.add_edge("end_node", END)
 
     initial_state = {
         "task_id": task.task_id,

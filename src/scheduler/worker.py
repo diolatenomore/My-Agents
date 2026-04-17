@@ -76,7 +76,6 @@ class AsyncBaseWorker(BaseWorker):
         """异步执行任务"""
         self.task.status = TaskStatus.RUNNING
         try:
-            # 使用 task_scope 设置任务上下文
             # 使用 AsyncSqliteSaver
             async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
                 self.graph = self.state_graph.compile(checkpointer=checkpointer)
