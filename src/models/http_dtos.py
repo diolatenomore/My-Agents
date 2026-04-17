@@ -2,7 +2,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from models.task import Priority
+from src.models.task import Priority
 
 
 class ChatRequest(BaseModel):

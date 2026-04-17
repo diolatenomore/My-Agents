@@ -33,9 +33,10 @@ class ResearchWriteState(TypedDict):
     result: Optional[str]
 
 class FileOrganizeState(TypedDict):
+    task_id: str
     messages: list[AnyMessage]
     query: str
     step: int
     plan_result: str
-    execute_completed: bool
+    execute_result: str
     verify_result: str

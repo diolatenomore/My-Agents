@@ -6,14 +6,15 @@ from langchain_community.chat_models import ChatTongyi
 from langgraph.graph import StateGraph
 from langgraph.constants import END
 
-from agents.research_write_prompt import RESEARCH_PROMPT, WRITE_PROMPT
-from config import AGENT_WORKSPACE_PATH, MODEL
-from models.state import ResearchWriteState
-from tools.research_write_tools import tavily_search, write_file, read_file
-from utils.common import extract_content
+from src.agents.research_write_prompt import RESEARCH_PROMPT, WRITE_PROMPT
+from src.config import AGENT_WORKSPACE_PATH, MODEL
+from src.models.state import ResearchWriteState
+from src.models.task import Task
+from src.tools.research_write_tools import tavily_search, write_file, read_file
+from src.utils.common import extract_content
 
 
-def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]:
+def create_research_write_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
     """创建研究-写作工作流图和初始状态"""
     backend = FilesystemBackend(root_dir=AGENT_WORKSPACE_PATH, virtual_mode=True)
 
@@ -156,7 +157,7 @@ def create_research_write_graph(query: str) -> Tuple[StateGraph, Dict[str, Any]]
 
     # 初始状态
     initial_state = {
-        "task": query,
+        "task": task.query,
         "research_file": None,
         "write_file": None,
         "messages": [],

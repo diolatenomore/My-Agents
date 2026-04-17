@@ -1,13 +1,14 @@
 from fastapi import FastAPI, HTTPException, Query, Path
 from langchain_community.chat_models import ChatTongyi
 import uuid
-from config import MODEL
-from utils.common import extract_content
-from models.http_dtos import ChatRequest, ChatResponse, GetTaskStatusResponse, TaskChangeResponse, \
+
+from src.config import MODEL
+from src.utils.common import extract_content
+from src.models.http_dtos import ChatRequest, ChatResponse, GetTaskStatusResponse, TaskChangeResponse, \
     UpdateTaskPriorityRequest, GetStatsResponse, TaskManagerStatus
-from scheduler.classifier import Classifier
-from scheduler.task_manager import TaskManager
-from models.task import Task, ExecutionType, TaskType, Priority
+from src.scheduler.classifier import Classifier
+from src.scheduler.task_manager import TaskManager
+from src.models.task import Task, ExecutionType, TaskType, Priority
 
 app = FastAPI()
 

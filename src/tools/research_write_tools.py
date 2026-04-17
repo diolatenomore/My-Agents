@@ -3,7 +3,7 @@ from langchain_core.tools import tool
 from tavily import TavilyClient
 import aiofiles
 
-from config import AGENT_WORKSPACE_PATH
+from src.config import AGENT_WORKSPACE_PATH
 
 
 @tool

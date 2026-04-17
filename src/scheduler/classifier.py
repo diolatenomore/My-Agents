@@ -1,5 +1,5 @@
-from models.task import TaskType
-from utils.common import logger
+from src.models.task import TaskType
+from src.utils.common import logger
 
 
 class Classifier:

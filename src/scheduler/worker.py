@@ -5,10 +5,10 @@ from typing import Any, override
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from config import CHECKPOINT_DB_PATH
-from models.task import Task, TaskStatus
-from workflow.graph_builder import GraphBuilder
-from utils.common import extract_content, logger
+from src.config import CHECKPOINT_DB_PATH
+from src.models.task import Task, TaskStatus
+from src.workflow.graph_builder import GraphBuilder
+from src.utils.common import extract_content, logger
 
 
 # TODO 统一worker，把任务类型的分类放到graph_builder
@@ -66,7 +66,7 @@ class AsyncBaseWorker(BaseWorker):
 
         self.config = {"configurable": {"thread_id": task.task_id}}
 
-        self.state_graph, self.initial_state = GraphBuilder.create_graph(task.task_type, task.query)
+        self.state_graph, self.initial_state = GraphBuilder.create_graph(task)
 
     def set_running_task(self, task):
         """设置运行中的 asyncio.Task"""
@@ -76,7 +76,8 @@ class AsyncBaseWorker(BaseWorker):
         """异步执行任务"""
         self.task.status = TaskStatus.RUNNING
         try:
-        # 使用 AsyncSqliteSaver
+            # 使用 task_scope 设置任务上下文
+            # 使用 AsyncSqliteSaver
             async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
                 self.graph = self.state_graph.compile(checkpointer=checkpointer)
                 # 执行工作流

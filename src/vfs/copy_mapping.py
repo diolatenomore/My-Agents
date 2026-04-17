@@ -1,12 +1,11 @@
-import shutil
 from dataclasses import dataclass
 from typing import Optional, Dict, List
 import sqlite3
 import os
 
 from src.config import DB_PATH
-from src.vfs.staging_area import StagingArea
-from utils.vfs import copy
+from src.vfs.staging_area import get_staging_area
+from src.utils.vfs import copy
 
 # TODO 有无必要把要写入数据库的记录先缓存起来，再批量写入数据库
 
@@ -20,19 +19,35 @@ class CopyRecord:
     staging_path: Optional[str] = None  #  暂存区路径
 
 
+def get_copy_mapping() -> CopyMapping:
+    """获取CopyMapping单例"""
+    copy_mapping = CopyMapping()
+    return copy_mapping
+
+
 class CopyMapping:
     """复制映射类，用于存储复制记录"""
-    task_id: str = None  #  任务id
-    registered_num: Dict[str, int] = {}  # 记录某个文件作为source_path的次数
-    copied_num: Dict[str, int] = {}  # 记录某个文件作为source_path已被拷贝的次数
-    dir_mapping: Dict[str, str] = {}  # 记录从source_path到target_path的目录映射关系
-    dir_copy_done: Dict[str, List[str]] = {}  # 记录某个目录已被拷贝的子文件路径
+    _instance = None
+    _initialized = False
     
-    @staticmethod
-    def register(source_path: str, target_path: str):
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self):
+        if not self._initialized:
+            self.task_id = None  #  任务id
+            self.registered_num = {}  # 记录某个文件作为source_path的次数
+            self.copied_num = {}  # 记录某个文件作为source_path已被拷贝的次数
+            self.dir_mapping = {}  # 记录从source_path到target_path的目录映射关系
+            self.dir_copy_done = {}  # 记录某个目录已被拷贝的子文件路径
+            CopyMapping._initialized = True
+
+    def register(self, source_path: str, target_path: str):
         """注册复制记录"""
         # 更新缓存
-        CopyMapping.registered_num[source_path] = CopyMapping.registered_num.get(source_path, 0) + 1
+        self.registered_num[source_path] = self.registered_num.get(source_path, 0) + 1
 
         # 写入到数据库
         conn = None
@@ -46,7 +61,7 @@ class CopyMapping:
             INSERT INTO copy_records (task_id, source_path, target_path, is_copied, is_dir)
             VALUES (?, ?, ?, ?, ?)
             ''', (
-                CopyMapping.task_id,
+                self.task_id,
                 source_path,
                 target_path,
                 0,  # 初始未复制
@@ -61,11 +76,10 @@ class CopyMapping:
         finally:
             if conn:
                 conn.close()
-
-    @staticmethod
-    def register_dir(source_path: str, target_path: str):
+        
+    def register_dir(self, source_path: str, target_path: str):
         """注册目录映射"""
-        CopyMapping.dir_mapping[source_path] = target_path
+        self.dir_mapping[source_path] = target_path
 
         # 写入到数据库
         conn = None
@@ -79,7 +93,7 @@ class CopyMapping:
             INSERT INTO copy_records (task_id, source_path, target_path, is_copied, is_dir)
             VALUES (?, ?, ?, ?, ?)
             ''', (
-                CopyMapping.task_id,
+                self.task_id,
                 source_path,
                 target_path,
                 0,  # 初始未复制
@@ -95,19 +109,18 @@ class CopyMapping:
             if conn:
                 conn.close()
 
-    @staticmethod
-    def need_copied(source_path: str) -> bool:
+    def need_copied(self, source_path: str) -> bool:
         """
         判断原文件是否需要被拷贝或无需拷贝
         返回false：无需拷贝或者已经被拷贝
         返回true：需要被拷贝
         """
         # 从缓存获取数据
-        copied_num = CopyMapping.copied_num.get(source_path, 0)
-        registered_num = CopyMapping.registered_num.get(source_path, 0)
+        copied_num = self.copied_num.get(source_path, 0)
+        registered_num = self.registered_num.get(source_path, 0)
 
         # 加上对应的目录拷贝次数
-        for dir_path in CopyMapping.dir_mapping.keys():
+        for dir_path in self.dir_mapping.keys():
             if source_path.startswith(dir_path + "/"):
                 registered_num += 1
         
@@ -115,24 +128,24 @@ class CopyMapping:
         return copied_num != registered_num
         
 
-    @staticmethod
-    def mark_copied(source_path: str):
+    def mark_copied(self, source_path: str):
         """拷贝所有未被拷贝的文件并修改标记"""
-        records = CopyMapping.get_from_db(task_id=CopyMapping.task_id, source_path=source_path)
+        records = self.get_from_db(task_id=self.task_id, source_path=source_path)
         # 如果原文件有暂存区路径则使用
-        source_staging_path = StagingArea.mapping.get(source_path)  # 直接获取路径，不判断是否被删除
+        staging_area = get_staging_area()
+        source_staging_path = staging_area.mapping.get(source_path)  # TODO 直接获取路径，不判断是否被删除
         path = source_staging_path if source_staging_path else source_path
         
         # 处理精确拷贝情况（source_path作为copy_file操作的原路径）
         update_ids = []
         for record in records:
             if not record.is_copied:
-                target_staging_path = StagingArea.get_staging_path(record.target_path)
+                target_staging_path = staging_area.get_staging_path(record.target_path)
                 if not os.path.exists(target_staging_path):
                     # 拷贝文件
                     copy(path, target_staging_path)
                 # 更新缓存
-                CopyMapping.copied_num[source_path] = CopyMapping.copied_num.get(source_path, 0) + 1
+                self.copied_num[source_path] = self.copied_num.get(source_path, 0) + 1
                 update_ids.append(record.id)
 
         # 更新数据库
@@ -161,28 +174,27 @@ class CopyMapping:
                     conn.close()
                     
         # 处理目录拷贝情况（copy_dir操作的原路径作为source_path的前缀）
-        for dir_path in CopyMapping.dir_mapping.keys():
-            if source_path.startswith(dir_path + "/") and source_path not in CopyMapping.dir_copy_done.get(dir_path, []):
+        for dir_path in self.dir_mapping.keys():
+            if source_path.startswith(dir_path + "/") and source_path not in self.dir_copy_done.get(dir_path, []):
                 # 计算目标路径
-                target_path = CopyMapping.dir_mapping[dir_path] + source_path[len(dir_path):]
-                target_staging_path = StagingArea.get_staging_path(target_path)
+                target_path = self.dir_mapping[dir_path] + source_path[len(dir_path):]
+                target_staging_path = staging_area.get_staging_path(target_path)
                 if not os.path.exists(target_staging_path):                
                     # 拷贝文件
                     copy(path, target_staging_path)
                 # 标记该该文件已完成对应的目录拷贝
-                CopyMapping.dir_copy_done.setdefault(dir_path, []).append(source_path)
+                self.dir_copy_done.setdefault(dir_path, []).append(source_path)
         
 
-    @staticmethod
-    def need_copied_dir(source_path: str) -> bool:
+    def need_copied_dir(self, source_path: str) -> bool:
         """判断目录是否需要被拷贝"""
-        return source_path in CopyMapping.dir_mapping.keys()
+        return source_path in self.dir_mapping.keys()
 
-    @staticmethod
-    def mark_copied_dir(source_path: str):
+    def mark_copied_dir(self, source_path: str):
         """拷贝所有该目录下的未被拷贝的文件并修改标记"""
         # 拷贝目录下的所有文件和子目录至暂存区
-        target_path = CopyMapping.dir_mapping[source_path]  # 目标目录完整路径
+        target_path = self.dir_mapping[source_path]  # 目标目录完整路径
+        staging_area = get_staging_area()
         for root, dirs, files in os.walk(source_path):
         # root: 当前遍历目录的完整路径      dirs: 当前目录下的子目录列表    files: 当前目录下的文件列表
             for file_name in files:
@@ -190,11 +202,11 @@ class CopyMapping:
                 source_file = os.path.join(root, file_name)         # 原文件完整路径
                 target_file = source_file.replace(source_path, target_path, 1)  # 目标文件完整路径
                 
-                target_staging_path = StagingArea.get_staging_path(target_file)
+                target_staging_path = staging_area.get_staging_path(target_file)
                 # 如果暂存区路径不真实存在则拷贝文件到暂存区
                 if not os.path.exists(target_staging_path):
                     # 如果原文件有暂存区路径则使用
-                    source_staging_path = StagingArea.mapping.get(source_file)  # 直接获取路径，不判断是否被删除
+                    source_staging_path = staging_area.mapping.get(source_file)  # TODO 直接获取路径，不判断是否被删除
                     path = source_staging_path if source_staging_path else source_file
                     # 拷贝文件
                     copy(path, target_staging_path)
@@ -203,7 +215,7 @@ class CopyMapping:
         # 收集所有需要标记的目录路径
         dir_paths_to_update = [source_path]
         # 从缓存中查找所有子目录的复制记录
-        for dir_source_path in CopyMapping.dir_mapping.keys():
+        for dir_source_path in self.dir_mapping.keys():
             if dir_source_path.startswith(source_path + '/'):
                 dir_paths_to_update.append(dir_source_path)
 
@@ -221,7 +233,7 @@ class CopyMapping:
                 UPDATE copy_records 
                 SET is_copied = 1, updated_at = CURRENT_TIMESTAMP
                 WHERE task_id = ? AND source_path = ? AND is_dir = 1
-                ''', (CopyMapping.task_id, dir_path))
+                ''', (self.task_id, dir_path))
             
             conn.commit()
         except Exception as e:
@@ -232,14 +244,14 @@ class CopyMapping:
             if conn:
                 conn.close()
 
-    @staticmethod
-    def copy_if_need(target_path: str):
+    def copy_if_need(self, target_path: str):
         """
         判断target_path是否需要拷贝，如果是，拷贝并修改标记。
         """
         # TODO 改为从缓存中查询，或者根据staging_path是否真正存在来判断
         # 判断是否为精确拷贝（target_path作为copy_file操作的目标路径）
-        record = CopyMapping.get_from_db(task_id=CopyMapping.task_id, target_path=target_path)
+        record = self.get_from_db(task_id=self.task_id, target_path=target_path)
+        staging_area = get_staging_area()
         # 不为None，说明是精确拷贝
         if record:
             # 已拷贝，跳过
@@ -247,13 +259,13 @@ class CopyMapping:
                 return
             
             # 如果原文件有暂存区路径则使用
-            staging_path_source = StagingArea.mapping.get(record[0].source_path)  # 直接获取路径，不判断是否被删除
+            staging_path_source = staging_area.mapping.get(record[0].source_path)  # TODO 直接获取路径，不判断是否被删除
             path = staging_path_source if staging_path_source else record[0].source_path
             
-            copy(path, StagingArea.get_staging_path(target_path))
+            copy(path, staging_area.get_staging_path(target_path))
             
             # 标记source_path已被拷贝一次
-            CopyMapping.copied_num[record[0].source_path] = CopyMapping.copied_num.get(record[0].source_path, 0) + 1
+            self.copied_num[record[0].source_path] = self.copied_num.get(record[0].source_path, 0) + 1
 
             # 更新数据库中的字段
             conn = None
@@ -279,36 +291,36 @@ class CopyMapping:
 
         # 判断是否为目录拷贝（target_path作为copy_dir操作的目标路径）
         else:        
-            for dir_source_path, dir_target_path in CopyMapping.dir_mapping.items():
+            
+            for dir_source_path, dir_target_path in self.dir_mapping.items():
                 if target_path.startswith(dir_target_path + "/"):
                     # 计算源路径
                     source_path = dir_source_path + target_path[len(dir_target_path):]
                     # 已拷贝，结束
-                    if source_path in CopyMapping.dir_copy_done.get(dir_source_path, []):
+                    if source_path in self.dir_copy_done.get(dir_source_path, []):
                         break
 
-                    target_staging_path = StagingArea.get_staging_path(target_path)
+                    target_staging_path = staging_area.get_staging_path(target_path)
                     if not os.path.exists(target_staging_path):    
                         # 如果原文件有暂存区路径则使用
-                        staging_path_source = StagingArea.mapping.get(source_path)  # 直接获取路径，不判断是否被删除
+                        staging_path_source = staging_area.mapping.get(source_path)  # 直接获取路径，不判断是否被删除
                         path = staging_path_source if staging_path_source else source_path
                         # 拷贝文件
                         copy(path, target_staging_path)
                     # 标记source_path文件已完成对应的目录拷贝
-                    CopyMapping.dir_copy_done.setdefault(dir_source_path, []).append(source_path)
+                    self.dir_copy_done.setdefault(dir_source_path, []).append(source_path)
                     # 结束
                     break
 
-    @staticmethod
-    def rename(old_path: str, new_path: str):
+    def rename(self, old_path: str, new_path: str):
         """修改映射"""
 
         # 如果old_path作为source_path，则更新缓存
-        if old_path in CopyMapping.copied_num:
-            CopyMapping.copied_num[new_path] = CopyMapping.copied_num[old_path]
-            CopyMapping.registered_num[new_path] = CopyMapping.registered_num[old_path]
-            del CopyMapping.copied_num[old_path]
-            del CopyMapping.registered_num[old_path]
+        if old_path in self.copied_num:
+            self.copied_num[new_path] = self.copied_num[old_path]
+            self.registered_num[new_path] = self.registered_num[old_path]
+            del self.copied_num[old_path]
+            del self.registered_num[old_path]
 
         # 更新数据库，把old_path（source_path/target_path）替换为new_path
         conn = None
@@ -323,14 +335,14 @@ class CopyMapping:
             UPDATE copy_records 
             SET source_path = ?, updated_at = CURRENT_TIMESTAMP
             WHERE task_id = ? AND source_path = ?
-            ''', (new_path, CopyMapping.task_id, old_path))
+            ''', (new_path, self.task_id, old_path))
             
             # 更新目标路径为old_path的记录
             cursor.execute('''
             UPDATE copy_records 
             SET target_path = ?, updated_at = CURRENT_TIMESTAMP
             WHERE task_id = ? AND target_path = ?
-            ''', (new_path, CopyMapping.task_id, old_path))
+            ''', (new_path, self.task_id, old_path))
             
             conn.commit()
         except Exception as e:
@@ -341,12 +353,11 @@ class CopyMapping:
             if conn:
                 conn.close()
 
-    @staticmethod
-    def rename_dir(old_dir_path: str, new_dir_path: str):
+    def rename_dir(self, old_dir_path: str, new_dir_path: str):
         """修改目录映射"""
         # 1. 处理 dir_mapping
         new_dir_mapping = {}
-        for source, target in CopyMapping.dir_mapping.items():
+        for source, target in self.dir_mapping.items():
             # 替换 key 中的 old_dir_path
             if source == old_dir_path:
                 new_dir_mapping[new_dir_path] = target
@@ -355,10 +366,10 @@ class CopyMapping:
                 new_dir_mapping[source] = new_dir_path
             else:
                 new_dir_mapping[source] = target
-        CopyMapping.dir_mapping = new_dir_mapping
+        self.dir_mapping = new_dir_mapping
 
         # 2. 处理 dir_copy_done
-        for source, paths in list(CopyMapping.dir_copy_done.items()):
+        for source, paths in list(self.dir_copy_done.items()):
             # 替换 key 中的 old_dir_path
             if source == old_dir_path:
                 # 替换list中的前缀
@@ -367,8 +378,8 @@ class CopyMapping:
                     new_path = new_dir_path + path[len(old_dir_path):]
                     new_paths.append(new_path)
 
-                CopyMapping.dir_copy_done[new_dir_path] = new_paths
-                del CopyMapping.dir_copy_done[old_dir_path]
+                self.dir_copy_done[new_dir_path] = new_paths
+                del self.dir_copy_done[old_dir_path]
 
         # 3. 处理 registered_num 和 copied_num 的前缀
         def replace_prefix(mapping):
@@ -382,8 +393,8 @@ class CopyMapping:
                     new_mapping[path] = value
             return new_mapping
 
-        CopyMapping.registered_num = replace_prefix(CopyMapping.registered_num)
-        CopyMapping.copied_num = replace_prefix(CopyMapping.copied_num)
+        self.registered_num = replace_prefix(self.registered_num)
+        self.copied_num = replace_prefix(self.copied_num)
 
         # 更新数据库
         conn = None
@@ -401,7 +412,7 @@ class CopyMapping:
                 WHERE task_id = ? 
                   AND source_path = ? 
                   AND is_dir = 1
-            ''', (new_dir_path, CopyMapping.task_id, old_dir_path))
+            ''', (new_dir_path, self.task_id, old_dir_path))
 
             # 更新 target_path 匹配的记录
             cursor.execute('''
@@ -411,7 +422,7 @@ class CopyMapping:
                 WHERE task_id = ? 
                   AND target_path = ? 
                   AND is_dir = 1
-            ''', (new_dir_path, CopyMapping.task_id, old_dir_path))
+            ''', (new_dir_path, self.task_id, old_dir_path))
 
             # 情况 B：更新子内容（以 old_dir_path/ 为前缀的文件和子目录）
             # 使用 SUBSTR 保留原路径的后缀部分
@@ -426,7 +437,7 @@ class CopyMapping:
             ''', (
                 new_dir_path,  # 新前缀
                 len(old_dir_path) + 1,
-                CopyMapping.task_id,
+                self.task_id,
                 old_dir_path + '/%'
             ))
 
@@ -440,7 +451,7 @@ class CopyMapping:
             ''', (
                 new_dir_path,
                 len(old_dir_path) + 1,
-                CopyMapping.task_id,
+                self.task_id,
                 old_dir_path + '/%'
             ))
 
@@ -516,8 +527,7 @@ class CopyMapping:
         
         return records
 
-    @staticmethod
-    def load(task_id: str):
+    def load(self, task_id: str):
         """
         从数据库加载复制记录到缓存
         
@@ -525,9 +535,9 @@ class CopyMapping:
             task_id: 任务 ID
         """
         # 清空当前缓存
-        CopyMapping.clear()
-        CopyMapping.task_id = task_id
-        
+        self.clear()  # TODO 检测缓存不为空就报错
+        self.task_id = task_id
+
         # 从数据库加载记录
         conn = None
         try:
@@ -551,25 +561,25 @@ class CopyMapping:
                 
                 if is_dir:
                     # 处理目录映射
-                    CopyMapping.dir_mapping[source_path] = target_path
+                    self.dir_mapping[source_path] = target_path
                 else:
                     # 处理文件复制记录
                     # 更新 registered_num
-                    CopyMapping.registered_num[source_path] = CopyMapping.registered_num.get(source_path, 0) + 1
+                    self.registered_num[source_path] = self.registered_num.get(source_path, 0) + 1
                     # 更新 copied_num
                     if is_copied:
-                        CopyMapping.copied_num[source_path] = CopyMapping.copied_num.get(source_path, 0) + 1
+                        self.copied_num[source_path] = self.copied_num.get(source_path, 0) + 1
         except Exception as e:
             print(f"加载复制记录失败: {e}")
         finally:
             if conn:
                 conn.close()
 
-    @staticmethod
-    def clear():
+    def clear(self):
         """清空缓存"""
-        CopyMapping.task_id = None
-        CopyMapping.copied_num.clear()
-        CopyMapping.registered_num.clear()
-        CopyMapping.dir_mapping.clear()
-        CopyMapping.dir_copy_done.clear()
+        self.task_id = None
+        self.copied_num.clear()
+        self.registered_num.clear()
+        self.dir_mapping.clear()
+        self.dir_copy_done.clear()
+
