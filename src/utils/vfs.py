@@ -15,7 +15,7 @@ dir_extensions = {'.tmp', '.temp', '.bak', '.backup', '.old',
 
 # 常见无扩展名文件
 common_files = {
-    'makefile', 'dockerfile', '.gitignore', 'jenkinsfile', 'gemfile',
+    'makefile', 'dockerfile', '.gitignore', '.DS_Store', 'jenkinsfile', 'gemfile',
     'readme', 'license', 'changelog', 'authors', 'contributors',
     'install', 'configure', 'setup', 'requirements', 'pipfile',
     'procfile', 'rakefile', 'gruntfile', 'gulpfile', 'webpackfile',

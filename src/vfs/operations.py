@@ -17,33 +17,37 @@ from src.utils.vfs import check_file_path, check_dir_path, isfile, isdir, copy
 # TODO 写入数据库另开一个协程/线程？全局只把要写的记录给它
 # TODO 在此阶段要加上操作约束，比如不能创建已存在的文件/目录，不能删除不存在的文件/目录、不能再删除之后操作该文件/目录（除非再创建）
 
-def list_dir(path: str):
+def list_dir(source_path: str):
     """列出目录下的所有文件和子目录"""
     # 路径合法性检查
-    result = check_dir_path(path)
+    result = check_dir_path(source_path)
     if result:
         return result
 
     # 检查目录是否存在
-    staging_path = StagingArea.get_staging_dir_path(path)
+    staging_path = StagingArea.get_staging_dir_path(source_path)
     if staging_path is None:
         # 检查是否被删除了
-        if StagingArea.is_deleted_dir(path):
-            return f"ERROR：目录{path}不存在"
+        if StagingArea.is_deleted_dir(source_path):
+            return f"ERROR：目录{source_path}不存在"
         # 检查原目录是否存在
-        if not os.path.exists(path):
-            return f"ERROR：目录{path}不存在"
+        if not os.path.exists(source_path):
+            return f"ERROR：目录{source_path}不存在"
 
     # 从真实文件系统获取目录内容
     real_files = set()
     real_dirs = set()
-    for item in os.listdir(path):
-        item_path = os.path.join(path, item)
-        if os.path.isfile(item_path):
-            real_files.add(item)
-        elif os.path.isdir(item_path):
-            real_dirs.add(item)
-
+    # 当source_path为虚拟的路径，os.listdir会报错，此时跳过即可
+    try:
+        for item in os.listdir(source_path):
+            item_path = os.path.join(source_path, item)
+            if os.path.isfile(item_path):
+                real_files.add(item)
+            elif os.path.isdir(item_path):
+                real_dirs.add(item)
+    except FileNotFoundError:
+        pass
+    
     # 从暂存区获取目录内容
     staged_files = set()
     staged_dirs = set()
@@ -53,9 +57,9 @@ def list_dir(path: str):
     # 遍历暂存区中的所有路径
     for path in StagingArea.mapping:
         # 检查是否是当前目录的直接子项
-        if path.startswith(path + "/"):
+        if path.startswith(source_path + "/"):
             # 提取子项名称
-            relative_path = path[len(path) + 1:]
+            relative_path = path[len(source_path) + 1:]
             if "/" not in relative_path:
                 if isfile(path):
                     staged_files.add(relative_path)
@@ -64,15 +68,15 @@ def list_dir(path: str):
 
     # 检查已删除的文件（不在映射中但被标记为删除的文件）
     for path in StagingArea.deleted_mapping:
-        if StagingArea.deleted_mapping[path] and path.startswith(path + "/"):
-            relative_path = path[len(path) + 1:]
+        if StagingArea.deleted_mapping[path] and path.startswith(source_path + "/"):
+            relative_path = path[len(source_path) + 1:]
             if "/" not in relative_path:
                 deleted_files.add(relative_path)
 
     # 检查已删除的目录（不在映射中但被标记为删除的目录）
     for path in StagingArea.deleted_dir_mapping:
-        if StagingArea.deleted_dir_mapping[path] and path.startswith(path + "/"):
-            relative_path = path[len(path) + 1:]
+        if StagingArea.deleted_dir_mapping[path] and path.startswith(source_path + "/"):
+            relative_path = path[len(source_path) + 1:]
             if "/" not in relative_path:
                 deleted_dirs.add(relative_path)
 
