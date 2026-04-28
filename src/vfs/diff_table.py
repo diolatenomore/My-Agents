@@ -2,11 +2,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
-import sqlite3
 
 from datetime import datetime
 
-from src.config import DB_PATH
+from src.db.sqlite_pool import db_pool
+from src.utils.common import logger
 
 
 def print_tree(group, indent=0):
@@ -91,36 +91,22 @@ class DiffTable:
     
     @staticmethod
     def operate(record: DiffRecord):
-        """
-        把操作写入数据库
-        """
-        conn = None
         try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row  # 使结果集可以通过列名访问
-            cursor = conn.cursor()
-            
-            # 插入操作记录
-            cursor.execute('''
-            INSERT INTO diff_records (task_id, operation_type, source_path, target_path, step, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ''', (
-                record.task_id,
-                record.operation_type.value,
-                record.source_path,
-                record.target_path,
-                record.step,
-                record.created_at
-            ))
-            
-            conn.commit()
+            with db_pool.get_conn() as conn:
+                conn.execute('''
+                INSERT INTO diff_records (task_id, operation_type, source_path, target_path, step, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''', (
+                    record.task_id,
+                    record.operation_type.value,
+                    record.source_path,
+                    record.target_path,
+                    record.step,
+                    record.created_at
+                ))
+                conn.commit()
         except Exception as e:
-            print(f"写入操作记录失败: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                conn.close()
+            logger.error(f"写入操作记录失败: {e}")
 
     @staticmethod
     def operate_batch(records: List[DiffRecord]):
@@ -129,39 +115,25 @@ class DiffTable:
         """
         if not records:
             return
-        
-        conn = None
+        data = []
+        for record in records:
+            data.append((
+                record.task_id,
+                record.operation_type.value,
+                record.source_path,
+                record.target_path,
+                record.step,
+                record.created_at
+            ))
         try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row  # 使结果集可以通过列名访问
-            cursor = conn.cursor()
-            
-            # 准备批量插入的数据
-            data = []
-            for record in records:
-                data.append((
-                    record.task_id,
-                    record.operation_type.value,
-                    record.source_path,
-                    record.target_path,
-                    record.step,
-                    record.created_at
-                ))
-            
-            # 批量插入
-            cursor.executemany('''
-            INSERT INTO diff_records (task_id, operation_type, source_path, target_path, step, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ''', data)
-            
-            conn.commit()
+            with db_pool.transaction() as conn:
+                conn.executemany('''
+                INSERT INTO diff_records (task_id, operation_type, source_path, target_path, step, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''', data)
+                conn.commit()
         except Exception as e:
-            print(f"批量写入操作记录失败: {e}")
-            if conn:
-                conn.rollback()
-        finally:
-            if conn:
-                conn.close()
+            logger.error(f"批量写入操作记录失败: {e}")
 
     @staticmethod
     def list(task_id: str) -> List[DiffRecord]:
@@ -169,36 +141,27 @@ class DiffTable:
         根据task_id导出所有操作
         """
         records = []
-        conn = None
         try:
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row  # 使结果集可以通过列名访问
-            cursor = conn.cursor()
-            
-            # 查询指定任务的所有操作记录
-            cursor.execute('''
-            SELECT id, task_id, operation_type, source_path, target_path, step, created_at
-            FROM diff_records
-            WHERE task_id = ?
-            ORDER BY created_at ASC
-            ''', (task_id,))
-            
-            # 转换为 DiffRecord 对象
-            for row in cursor.fetchall():
-                record = DiffRecord(
-                    task_id=row['task_id'],
-                    operation_type=OperationType(row['operation_type']),
-                    source_path=row['source_path'],
-                    target_path=row['target_path'],
-                    step=row['step']
-                )
-                records.append(record)
+            with db_pool.get_conn() as conn:
+                cursor = conn.execute('''
+                SELECT id, task_id, operation_type, source_path, target_path, step, created_at
+                FROM diff_records
+                WHERE task_id = ?
+                ORDER BY created_at ASC
+                ''', (task_id,))
+
+                for row in cursor.fetchall():
+                    record = DiffRecord(
+                        task_id=row['task_id'],
+                        operation_type=OperationType(row['operation_type']),
+                        source_path=row['source_path'],
+                        target_path=row['target_path'],
+                        step=row['step']
+                    )
+                    records.append(record)
         except Exception as e:
-            print(f"导出操作记录失败: {e}")
-        finally:
-            if conn:
-                conn.close()
-        
+            logger.error(f"导出操作记录失败: {e}")
+
         return records
 
     @staticmethod

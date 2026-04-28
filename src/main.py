@@ -3,19 +3,24 @@ from langchain_community.chat_models import ChatTongyi
 import uuid
 
 from src.config import MODEL
+from src.db.init_db import init_db
 from src.utils.common import extract_content
 from src.models.http_dtos import ChatRequest, ChatResponse, GetTaskStatusResponse, TaskChangeResponse, \
     UpdateTaskPriorityRequest, GetStatsResponse, TaskManagerStatus
 from src.scheduler.classifier import Classifier
 from src.scheduler.task_manager import TaskManager
-from src.models.task import Task, ExecutionType, TaskType, Priority
+from src.models.task import Task, ExecutionType, TaskType, Priority, TaskStatus
 
 app = FastAPI()
+
+# 初始化数据库表
+init_db()
 
 # 创建全局 task_manager 实例
 task_manager = TaskManager()
 task_manager.run()
 
+# TODO chat后续带上session_id
 
 @app.post('/api/chat', response_model=ChatResponse)
 async def chat(request: ChatRequest):
@@ -47,13 +52,14 @@ async def chat(request: ChatRequest):
             task_id=task_id,
             query=query,
             task_type=decision,
+            status=TaskStatus.PENDING,
             priority=Priority.P2
         )
         task_manager.enqueue(task)
         return ChatResponse(
             code=200,
             message=f"任务已创建, task_id:{task_id}",
-            type="mission"
+            type="mission" + decision
         )
 
 # 暂时不用

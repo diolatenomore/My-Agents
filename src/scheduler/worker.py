@@ -10,8 +10,7 @@ from src.models.task import Task, TaskStatus
 from src.workflow.graph_builder import GraphBuilder
 from src.utils.common import extract_content, logger
 
-
-# TODO 统一worker，把任务类型的分类放到graph_builder
+# TODO 在worker层面加上任务结束的清理
 
 class BaseWorker(ABC):
     """Worker 基类"""
@@ -27,7 +26,6 @@ class BaseWorker(ABC):
 
     def pause(self):
         self.pause_flag.set()
-        self.task.status = TaskStatus.PAUSED
 
     def is_paused(self) -> bool:
         """检查任务是否已暂停"""
@@ -35,7 +33,6 @@ class BaseWorker(ABC):
 
     def cancel(self):
         self.pause_flag.set()
-        self.task.status = TaskStatus.CANCELLED
         print(f"[{self.worker_id}] 任务已取消")
 
     def clear_pause(self):
@@ -74,7 +71,6 @@ class AsyncBaseWorker(BaseWorker):
 
     async def run(self) -> Any:
         """异步执行任务"""
-        self.task.status = TaskStatus.RUNNING
         try:
             # 使用 AsyncSqliteSaver
             async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
@@ -90,8 +86,7 @@ class AsyncBaseWorker(BaseWorker):
                 # 检查任务状态，只有未被暂停或取消的任务才会设置结果
                 if self.task.status != TaskStatus.PAUSED and self.task.status != TaskStatus.CANCELLED:
                     logger.info(f"[{self.worker_id}] 任务执行完成")
-                    self.task.status = TaskStatus.COMPLETED
-                    self.task_manager.set_result(self.task.task_id, extract_content(response))
+                    self.task_manager.set_result(self.task.task_id, extract_content(response), TaskStatus.COMPLETED)
         except asyncio.CancelledError:
             # 捕获取消异常
             logger.info(f"[{self.worker_id}] 任务被取消，保存断点，使用task.cancel")
@@ -102,7 +97,7 @@ class AsyncBaseWorker(BaseWorker):
             # 检查任务状态，只有未暂停或取消的任务才会设置错误结果
             if self.task.status != TaskStatus.PAUSED and self.task.status != TaskStatus.CANCELLED:
                 self.task.status = TaskStatus.ERROR
-                self.task_manager.set_result(self.task.task_id, f"Error: {str(e)}")
+                self.task_manager.set_result(self.task.task_id, f"Error: {str(e)}", TaskStatus.ERROR)
 
     @property
     def pause_flag(self):
