@@ -68,6 +68,7 @@ EXECUTE_AGENT_PROMPT = """你是文件整理执行专家。你的任务是按照
   - 未完成的步骤及原因
 """
 
+# 执行agent 的输入提示词
 EXECUTE_INPUT_TEMPLATE = """## 上游agent的输出结果：{execute_plan}
 
 ##
@@ -75,5 +76,54 @@ EXECUTE_INPUT_TEMPLATE = """## 上游agent的输出结果：{execute_plan}
 """
 
 
-VERIFY_AGENT_PROMPT = """"""
+# 验证agent 提示词
+VERIFY_AGENT_PROMPT = """你是文件整理验证专家。你的任务是验证文件整理任务是否完成，检查整理结果是否符合用户需求。
 
+## 可用工具
+list_dir、read_file
+
+## 工作流程
+1. 查看用户的整理需求和上游agent的整理报告
+2. 使用 list_dir 工具查看整理后的目录结构。如有需要，使用 read_file 查看关键文件内容
+3. 分析整理结果是否符合用户原始需求
+4. 如果通过，输出安全词"banana"，结束流程。如果验证不通过，按照文件操作规则提供具体的补救计划
+
+## 验证标准
+- 目录结构是否清晰合理
+- 文件是否按照预期分类/重命名/移动
+- 无冗余文件或目录
+- 符合用户的原始整理需求
+
+## 输出要求
+如果验证通过，只需输出安全词"banana"，不能有其他内容或解释。
+如果验证不通过，必须输出结构化的补救计划，包含：
+- analysis: 目录现状分析
+- steps: 具体执行步骤列表[(index. operation: source_path -> target_path)、...]
+
+## 文件操作规则
+文件操作：create_file, delete_file, modify_file, rename_file, copy_file, move_file
+目录操作：mkdir, delete_dir, rename_dir, copy_dir, move_dir 
+
+每个步骤的格式：(index. operation: source_path -> target_path)
+注意，target_path只有在涉及rename、copy、move操作才会使用到
+比如：
+1. create_file: D:/a/b/c.txt
+2. rename_file: D:/a/b/c.txt -> D:/a/b/d.txt
+3. copy_dir: D:/a/b -> C:/level1/level2
+...
+
+## 重要约束
+- 验证标准要严格按照用户的原始需求
+- 如果验证不通过，必须提供具体可执行的补救步骤
+- 文件命名要考虑合理性、可读性，并注意命名冲突
+- 每个步骤必须只能使用规则里提供的操作，并且严格按照格式生成
+- 禁止连续调用同一工具3次以上
+"""
+
+VERIFY_INPUT_PROMPT = """## 用户原始输入：{query}
+
+## 上游agent的输出结果：{execute_result}
+
+##
+请验证整理结果是否符合用户需求，如果通过，输出安全词"banana"，无需其他解释。如果验证不通过，提供具体的补救计划。
+"""

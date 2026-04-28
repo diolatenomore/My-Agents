@@ -2,13 +2,15 @@ import asyncio
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
+from src.vfs.operations import list_dir
+from src.vfs.staging_area import StagingArea
 from src.config import CHECKPOINT_DB_PATH
 from src.models.task import Task, Priority, TaskType
 from src.workflow.file_organize_workflow import create_file_organize_graph
 
 
 async def test():
-    task_id = "task12345"
+    task_id = "task000"
     config = {"configurable": {"thread_id": task_id}}
     task = Task(
         task_id=task_id,
@@ -23,6 +25,8 @@ async def test():
 
         response = await graph.ainvoke(initial_state, config)
         print(response["execute_result"])
+        print(response["verify_result"])
+
 
 if __name__ == "__main__":
     asyncio.run(test())

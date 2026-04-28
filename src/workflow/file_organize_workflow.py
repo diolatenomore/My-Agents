@@ -7,7 +7,7 @@ from langgraph.graph import StateGraph
 from langgraph.constants import END
 
 from src.agents.file_organize_prompt import PLAN_AGENT_PROMPT, EXECUTE_AGENT_PROMPT, VERIFY_AGENT_PROMPT, \
-    PLAN_INPUT_TEMPLATE, EXECUTE_INPUT_TEMPLATE
+    PLAN_INPUT_TEMPLATE, EXECUTE_INPUT_TEMPLATE, VERIFY_INPUT_PROMPT
 from src.config import MODEL
 from src.models.state import FileOrganizeState
 from src.models.task import Task
@@ -25,7 +25,7 @@ from src.vfs.staging_area import StagingArea
 # 方法2: 每个阶段后清空messages
 # 方法3: 使用子图（checkpoint比较复杂）
 
-# TODO 提示词待完善
+# TODO 不同模型提供商返回的内容需要提取
 
 # 实际调用的函数
 tools_by_name = {
@@ -53,7 +53,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
 
     async def plan_node(state: FileOrganizeState) -> FileOrganizeState:
         model = ChatTongyi(model=MODEL)
-        tools = [list_dir, read_file]  # TODO 添加工具
+        tools = [list_dir, read_file]
         model_with_tools = model.bind_tools(tools)
 
         # 初始化消息列表
@@ -105,15 +105,14 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
         if not messages:
             messages = [
                 SystemMessage(content=EXECUTE_AGENT_PROMPT),
-                HumanMessage(content=PromptTemplate.from_template(EXECUTE_INPUT_TEMPLATE)
-                             .format(
+                HumanMessage(content=PromptTemplate.from_template(EXECUTE_INPUT_TEMPLATE).format(
                     execute_plan=state["plan_result"] if not state.get("verify_result") else state["verify_result"]))
             ]
 
         response = await model_with_tools.ainvoke(messages)
 
         if response.tool_calls:
-            return {"messages": messages + [response], "step": state["step"] + 1, "execute_result": None}
+            return {"messages": messages + [response], "step": state["step"] + 1, "execute_result": None, "verify_result": None}
 
         # 无需再调用工具时，手动清空 messages，因为下个阶段的agent无需知道本阶段的对话
         logger.info(f"execute输出:{response.content}")
@@ -127,9 +126,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
         result = []
         for tool_call in state["messages"][-1].tool_calls:
             tool = tools_by_name[tool_call["name"]]
-            # observation = tool(**tool_call["args"], _task_id=state["task_id"])  # 注入task_id
             observation = tool(**tool_call["args"])
-            # observation = await tool.ainvoke({**tool_call["args"], "_task_id": task.task_id})  # 注入task_id
             result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
             logger.info(f"execute阶段  工具: {tool_call['name']}    参数: {tool_call['args']}")
             logger.info(f"工具返回{observation}")
@@ -146,14 +143,13 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
         tools = [list_dir, read_file]
         model_with_tools = model.bind_tools(tools)
 
-        return {"verify_result": "1"}
-
         # 初始化消息列表
         messages = state.get("messages", [])
         if not messages:
             messages = [
                 SystemMessage(content=VERIFY_AGENT_PROMPT),
-                HumanMessage(content=f"这是用户输入：{state['query']}\n检查任务是否完成")
+                HumanMessage(content=PromptTemplate.from_template(VERIFY_INPUT_PROMPT)
+                             .format(query=state["query"], execute_result=state["execute_result"]))
             ]
 
         response = await model_with_tools.ainvoke(messages)
@@ -162,6 +158,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
             return {"messages": messages + [response], "step": state["step"] + 1}
 
         # 无需再调用工具时，手动清空 messages，因为下个阶段的agent无需知道本阶段的对话
+        logger.info(f"verify输出:{response.content}")
         return {
             "messages": [],  # 手动清空
             "step": state["step"] + 1,
@@ -174,17 +171,18 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
             tool = tools_by_name[tool_call["name"]]
             observation = tool(**tool_call["args"])
             result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
+            logger.info(f"verify阶段  工具: {tool_call['name']}    参数: {tool_call['args']}")
+            logger.info(f"工具返回：{observation}")
         return {"messages": state["messages"] + result, "step": state["step"] + 1}
 
     def should_continue_verify(state: FileOrganizeState):
         if state.get("verify_result") and state["verify_result"]:
-            return "end"
-            # # TODO 判断是否通过
-            # if pass:
-            #     return "end"
-            # else:
-            #     return "execute"
-            pass
+            print(state["verify_result"])
+            # 简单判断验证结果
+            if "banana" in str(state["verify_result"]) or "Banana" in str(state["verify_result"]):
+                return "end"
+            else:
+                return "execute"
 
         return "verify_tool_node"
 

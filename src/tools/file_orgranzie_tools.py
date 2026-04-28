@@ -9,7 +9,7 @@ import src.vfs.operations as ops
 
 # ============ 输入模型 ============
 class ListDirInput(BaseModel):
-    path: str = Field(description="要查看的目录的绝对路径")
+    source_path: str = Field(description="要查看的目录的绝对路径")
 
 class ReadFileInput(BaseModel):
     path: str = Field(description="要读取的文件的绝对路径")
@@ -58,9 +58,9 @@ class MoveDirInput(BaseModel):
 # ============ 工具定义 ============
 
 @tool(args_schema=ListDirInput)
-async def list_dir(path: str) -> str:
+async def list_dir(source_path: str) -> str:
     """列出指定目录下的所有文件和子目录"""
-    return ops.list_dir(path)
+    return ops.list_dir(source_path)
 
 @tool(args_schema=ReadFileInput)
 async def read_file(path: str) -> str:
