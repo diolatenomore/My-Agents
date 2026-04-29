@@ -1,4 +1,4 @@
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Tuple, Optional
 
 from langchain_community.chat_models import ChatTongyi
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
@@ -44,19 +44,18 @@ tools_by_name = {
     "move_dir": ops.move_dir,
 }
 
+def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], Optional[Callable], Optional[Callable]]:
+    def _init():
+        """初始化函数"""
+        set_current_task_id(task.task_id)
+        StagingArea.load(task.task_id)
+        CopyMapping.load(task.task_id)
 
-def cleanup_func():
-    # 资源清理函数
-    StagingArea.clear()
-    CopyMapping.clear()
-    clean_current_task_id()
-
-
-def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], Optional[Callable]]:
-    # 设置task_id并初始化
-    set_current_task_id(task.task_id)
-    StagingArea.load(task.task_id)
-    CopyMapping.load(task.task_id)
+    def _cleanup():
+        """资源清理函数"""
+        StagingArea.clear()
+        CopyMapping.clear()
+        clean_current_task_id()
 
     async def plan_node(state: FileOrganizeState) -> FileOrganizeState:
         model = ChatTongyi(model=MODEL)
@@ -241,5 +240,5 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
         "verify_result": None,
     }
 
-    return workflow, initial_state, cleanup_func()
+    return workflow, initial_state, _init, _cleanup
 

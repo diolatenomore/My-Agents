@@ -10,7 +10,6 @@ from src.models.task import Task, TaskStatus
 from src.workflow.graph_builder import GraphBuilder
 from src.utils.common import extract_content, logger
 
-# TODO 在worker层面加上任务结束的清理
 
 class BaseWorker(ABC):
     """Worker 基类"""
@@ -26,6 +25,7 @@ class BaseWorker(ABC):
 
     def pause(self):
         self.pause_flag.set()
+        self.task.status = TaskStatus.PAUSED
 
     def is_paused(self) -> bool:
         """检查任务是否已暂停"""
@@ -33,7 +33,7 @@ class BaseWorker(ABC):
 
     def cancel(self):
         self.pause_flag.set()
-        print(f"[{self.worker_id}] 任务已取消")
+        self.task.status = TaskStatus.CANCELLED
 
     def clear_pause(self):
         """清除暂停标志"""
@@ -63,8 +63,8 @@ class AsyncBaseWorker(BaseWorker):
 
         self.config = {"configurable": {"thread_id": task.task_id}}
 
-        # 根据任务类型返回(图、初始状态、资源清理函数)
-        self.state_graph, self.initial_state, self.cleanup_func = GraphBuilder.create_graph(task)
+        self.state_graph, self.initial_state, self._init_func, self._cleanup_func = GraphBuilder.create_graph(task)
+
 
     def set_running_task(self, task):
         """设置运行中的 asyncio.Task"""
@@ -75,14 +75,17 @@ class AsyncBaseWorker(BaseWorker):
         try:
             # 使用 AsyncSqliteSaver
             async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as checkpointer:
-                self.graph = self.state_graph.compile(checkpointer=checkpointer)
+                graph = self.state_graph.compile(checkpointer=checkpointer)
+                # 初始化资源
+                if self._init_func is not None:
+                    self._init_func()
                 # 执行工作流
                 if self.task.is_resume:
                     logger.info(f"[{self.worker_id}] 任务 {self.task.task_id} 为恢复任务，从断点继续执行")
-                    response = await self.graph.ainvoke(None, self.config)
+                    response = await graph.ainvoke(None, self.config)
                 else:
                     logger.info(f"[{self.worker_id}] 任务 {self.task.task_id} 为新任务，从初始状态开始执行")
-                    response = await self.graph.ainvoke(self.initial_state, self.config)
+                    response = await graph.ainvoke(self.initial_state, self.config)
 
                 # 检查任务状态，只有未被暂停或取消的任务才会设置结果
                 if self.task.status != TaskStatus.PAUSED and self.task.status != TaskStatus.CANCELLED:
@@ -91,17 +94,17 @@ class AsyncBaseWorker(BaseWorker):
         except asyncio.CancelledError:
             # 捕获取消异常
             logger.info(f"[{self.worker_id}] 任务被取消，保存断点，使用task.cancel")
-            self.task.status = TaskStatus.PAUSED
             # 任务被取消时，langgraph 会自动处理中断和状态保存
         except Exception as e:
-            logger.error(f"[{self.worker_id}] 任务执行出错: {str(e)}")
+            logger.error(f"[{self.worker_id}] 任务执行出错: {str(e)}", exc_info=True)
             # 检查任务状态，只有未暂停或取消的任务才会设置错误结果
             if self.task.status != TaskStatus.PAUSED and self.task.status != TaskStatus.CANCELLED:
                 self.task.status = TaskStatus.ERROR
                 self.task_manager.set_result(self.task.task_id, f"Error: {str(e)}", TaskStatus.ERROR)
         finally:
             # 资源清理
-            self.cleanup_func()
+            if self._cleanup_func is not None:
+                self._cleanup_func()
 
     @property
     def pause_flag(self):
@@ -111,15 +114,18 @@ class AsyncBaseWorker(BaseWorker):
     def pause(self):
         # 继续维护pause_flag
         self.pause_flag.set()
+        self.task.status = TaskStatus.PAUSED
         if self.running_task:
             logger.info(f"[{self.worker_id}] 任务 {self.task.task_id} 被暂停")
             self.running_task.cancel()
-        self.task.status = TaskStatus.PAUSED
+        # 标记task的is_resume为true
+        self.task.is_resume = True
+        self.task_manager.task_repo.update_is_resume(self.task.task_id, True)
 
     @override
     def cancel(self):
         self.pause_flag.set()
+        self.task.status = TaskStatus.CANCELLED
         if self.running_task:
             logger.info(f"[{self.worker_id}] 任务 {self.task.task_id} 被取消")
             self.running_task.cancel()
-        self.task.status = TaskStatus.CANCELLED

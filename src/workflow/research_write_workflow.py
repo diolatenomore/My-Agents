@@ -14,7 +14,7 @@ from src.tools.research_write_tools import tavily_search, write_file, read_file
 from src.utils.common import extract_content
 
 
-def create_research_write_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], Optional[Callable]]:
+def create_research_write_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], Optional[Callable], Optional[Callable]]:
     """创建研究-写作工作流图和初始状态"""
     backend = FilesystemBackend(root_dir=AGENT_WORKSPACE_PATH, virtual_mode=True)
 
@@ -165,4 +165,4 @@ def create_research_write_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any],
         "result": None
     }
 
-    return workflow, initial_state, None
+    return workflow, initial_state, None, None
