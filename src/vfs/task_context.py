@@ -23,6 +23,10 @@ def get_current_task_id() -> str:
         raise RuntimeError("task_id未设置")
     return task_id
 
+def get_task_id_with_no_error():
+    """直接获取 task_id，不考虑是否为空"""
+    return TaskContent.get()
+
 def set_current_task_id(task_id: str):
     current_id = TaskContent.get()
     if current_id:

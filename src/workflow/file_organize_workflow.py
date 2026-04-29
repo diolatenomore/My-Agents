@@ -19,6 +19,7 @@ from src.utils.common import logger
 from src.vfs.task_context import set_current_task_id, clean_current_task_id
 from src.vfs.copy_mapping import CopyMapping
 from src.vfs.staging_area import StagingArea
+from vfs.task_context import get_task_id_with_no_error
 
 # TODO 不同agent的messages应该不同
 # 方法1: 使用独立字段xxxx_messages
@@ -53,9 +54,12 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
 
     def _cleanup():
         """资源清理函数"""
-        StagingArea.clear()
-        CopyMapping.clear()
-        clean_current_task_id()
+        current_task_id = get_task_id_with_no_error()
+        # 只有运行时task_id等于当前task_id才清理，避免错删
+        if current_task_id == task.task_id:
+            StagingArea.clear()
+            CopyMapping.clear()
+            clean_current_task_id()
 
     async def plan_node(state: FileOrganizeState) -> FileOrganizeState:
         model = ChatTongyi(model=MODEL)
