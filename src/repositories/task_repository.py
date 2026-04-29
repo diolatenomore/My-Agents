@@ -1,5 +1,4 @@
 import sqlite3
-import threading
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
@@ -64,13 +63,22 @@ class TaskRepository:
             conn.commit()
         logger.debug(f"[TaskRepository] 任务 {task_id} 优先级已更新为 {priority.name}")
 
+    def update_is_resume(self, task_id: str, is_resume: bool):
+        with db_pool.get_conn() as conn:
+            conn.execute("""
+                UPDATE tasks SET is_resume = ?, updated_at = datetime('now')
+                WHERE task_id = ?
+            """, (is_resume, task_id))
+            conn.commit()
+        logger.debug(f"[TaskRepository] 任务 {task_id} 的is_resume 已设置为 {is_resume}")
+
     def get_task_status(self, task_id: str):
         with db_pool.get_conn() as conn:
             cursor = conn.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,))
             row = cursor.fetchone()
         if row is None:
             return None
-        return row["status"]
+        return TaskStatus(row["status"])
 
     def get_tasks_by_status(self, status: TaskStatus) -> List[Task]:
         with db_pool.get_conn() as conn:
@@ -81,10 +89,10 @@ class TaskRepository:
             return [self._row_to_task(row) for row in cursor.fetchall()]
 
     def set_result(self, task_id: str, result: str, status: TaskStatus):
-        if status != TaskStatus.COMPLETED or status != TaskStatus.ERROR:
+        if not (status == TaskStatus.COMPLETED or status == TaskStatus.ERROR):
             logger.error("status参数错误")
             return
-        with db_pool.transaction() as conn:
+        with db_pool.get_conn() as conn:
             conn.execute("""
                 UPDATE tasks SET status = ?, updated_at = datetime('now')
                 WHERE task_id = ?

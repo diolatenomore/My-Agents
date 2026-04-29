@@ -138,6 +138,7 @@ class TaskManager:
         with self.result_lock:
             result = self.results.get(task_id)
             if result is not None:
+                del self.results[task_id]  # 在内存中删除
                 return result
         return self.task_repo.get_result(task_id)
 
@@ -147,24 +148,24 @@ class TaskManager:
         with self.worker_lock:
             worker = self.workers.get(task_id)
             if worker:
-                return TaskStatus.RUNNING
+                return TaskStatus.RUNNING.name
         # 然后检查任务是否在待执行队列中
         with self.queue_lock:
             for task in self.pending_queue:
                 if task.task_id == task_id:
-                    return TaskStatus.PENDING
+                    return TaskStatus.PENDING.name
             # 检查任务是否在暂停队列中
             for task in self.paused_queue:
                 if task.task_id == task_id:
-                    return TaskStatus.PAUSED
+                    return TaskStatus.PAUSED.name
         # 检查任务是否已完成
         with self.result_lock:
             if task_id in self.results:
-                return TaskStatus.COMPLETED
+                return TaskStatus.COMPLETED.name
         # 从数据库查询
         status = self.task_repo.get_task_status(task_id)
         if status is not None:
-            return status
+            return status.name
         return "任务不存在"
 
     def pause_task(self, task_id):
@@ -181,10 +182,9 @@ class TaskManager:
                 # 将任务添加到暂停队列
                 with self.queue_lock:
                     task.status = TaskStatus.PAUSED
-                    task.is_resume = True
                     heapq.heappush(self.paused_queue, task)
-                # 更新任务状态和恢复标记
-                self.task_repo.save_task(task)
+                # 更新任务状态
+                self.task_repo.update_status(task_id, TaskStatus.PAUSED)
                 logger.info(f"[TaskManager] 任务 {task_id} 已暂停并移至暂停队列")
                 return f"任务 {task_id} 已暂停并移至暂停队列"
 
@@ -451,13 +451,12 @@ class TaskManager:
 
                 # 更新任务状态为PENDING
                 lowest_priority_worker.task.status = TaskStatus.PENDING
-                lowest_priority_worker.task.is_resume = True
 
                 # 将任务添加到待执行队列
                 with self.queue_lock:
                     heapq.heappush(self.pending_queue, lowest_priority_worker.task)
                 # 更新被抢占任务的状态和恢复标记
-                self.task_repo.save_task(lowest_priority_worker.task)
+                self.task_repo.update_status(lowest_priority_worker.task.task_id, TaskStatus.PENDING)
                 logger.info(f"[TaskManager] 任务 {task_id_to_pause} 已暂停并移至待执行队列")
 
     def run(self):
