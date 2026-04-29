@@ -11,7 +11,6 @@ from src.utils.common import logger
 class SqlitePool:
     def __init__(self):
         self.db_path = DB_PATH
-        self.max_connections = MAX_CONNECTIONS
         self._pool = queue.Queue(maxsize=MAX_CONNECTIONS)
         self._lock = threading.Lock()
         self._created = 0
@@ -37,7 +36,7 @@ class SqlitePool:
             pass
 
         with self._lock:
-            if self._created < self.max_connections:
+            if self._created < MAX_CONNECTIONS:
                 conn = self._create_connection()
                 self._created += 1
                 return conn
