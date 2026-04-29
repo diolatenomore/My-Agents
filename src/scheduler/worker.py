@@ -63,7 +63,8 @@ class AsyncBaseWorker(BaseWorker):
 
         self.config = {"configurable": {"thread_id": task.task_id}}
 
-        self.state_graph, self.initial_state = GraphBuilder.create_graph(task)
+        # 根据任务类型返回(图、初始状态、资源清理函数)
+        self.state_graph, self.initial_state, self.cleanup_func = GraphBuilder.create_graph(task)
 
     def set_running_task(self, task):
         """设置运行中的 asyncio.Task"""
@@ -98,6 +99,9 @@ class AsyncBaseWorker(BaseWorker):
             if self.task.status != TaskStatus.PAUSED and self.task.status != TaskStatus.CANCELLED:
                 self.task.status = TaskStatus.ERROR
                 self.task_manager.set_result(self.task.task_id, f"Error: {str(e)}", TaskStatus.ERROR)
+        finally:
+            # 资源清理
+            self.cleanup_func()
 
     @property
     def pause_flag(self):

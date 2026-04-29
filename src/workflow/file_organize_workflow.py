@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from langchain_community.chat_models import ChatTongyi
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
@@ -45,7 +45,14 @@ tools_by_name = {
 }
 
 
-def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
+def cleanup_func():
+    # 资源清理函数
+    StagingArea.clear()
+    CopyMapping.clear()
+    clean_current_task_id()
+
+
+def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], Optional[Callable]]:
     # 设置task_id并初始化
     set_current_task_id(task.task_id)
     StagingArea.load(task.task_id)
@@ -186,12 +193,6 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
 
         return "verify_tool_node"
 
-    def end_node(state: FileOrganizeState) -> FileOrganizeState:
-        """进行资源的清理"""
-        StagingArea.clear()
-        CopyMapping.clear()
-        clean_current_task_id()
-
     workflow = StateGraph(FileOrganizeState)
     workflow.add_node("plan", plan_node)
     workflow.add_node("plan_tool_node", plan_tool_node)
@@ -199,7 +200,6 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
     workflow.add_node("execute_tool_node", execute_tool_node)
     workflow.add_node("verify", verify_node)
     workflow.add_node("verify_tool_node", verify_tool_node)
-    workflow.add_node("end_node", end_node)
 
     workflow.set_entry_point("plan")
     workflow.add_conditional_edges(
@@ -226,11 +226,10 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
         {
             "verify_tool_node": "verify_tool_node",
             "execute": "execute",
-            "end": "end_node"
+            "end": END
         }
     )
     workflow.add_edge("verify_tool_node", "verify")
-    workflow.add_edge("end_node", END)
 
     initial_state = {
         "task_id": task.task_id,
@@ -242,5 +241,5 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any]]:
         "verify_result": None,
     }
 
-    return workflow, initial_state
+    return workflow, initial_state, cleanup_func()
 
