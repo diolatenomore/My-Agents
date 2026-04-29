@@ -73,6 +73,6 @@ def init_db():
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_diff_records_task_id ON diff_records(task_id)")
 
-        cursor.commit()
+        conn.commit()
 
     logger.info("数据库所有表初始化完成")

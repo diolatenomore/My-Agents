@@ -4,7 +4,7 @@ import queue
 import threading
 from contextlib import contextmanager
 
-from src.config import DB_PATH, MAX_CONNECTIONS
+from src.config import DB_PATH, MAX_CONNECTIONS, CONNECT_TIMEOUT
 from src.utils.common import logger
 
 
@@ -25,7 +25,7 @@ class SqlitePool:
         conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
-    def acquire(self) -> sqlite3.Connection:
+    def _acquire(self) -> sqlite3.Connection:
         if self._closed:
             raise RuntimeError("连接池已关闭，无法获取连接")
 
@@ -40,11 +40,16 @@ class SqlitePool:
                 conn = self._create_connection()
                 self._created += 1
                 return conn
+        
+        try:
+            conn = self._pool.get(timeout=CONNECT_TIMEOUT)
+            return conn
+        except queue.Empty:
+            if self._closed:
+                raise RuntimeError("连接池已关闭，无法获取连接")
+            raise RuntimeError("获取数据库连接超时")
 
-        conn = self._pool.get()
-        return conn
-
-    def release(self, conn: sqlite3.Connection):
+    def _release(self, conn: sqlite3.Connection):
         if self._closed:
             conn.close()
             return
@@ -56,7 +61,7 @@ class SqlitePool:
     @contextmanager
     def get_conn(self):
         """强制事务上下文，自动 BEGIN/COMMIT/ROLLBACK"""
-        conn = self.acquire()
+        conn = self._acquire()
         conn.execute("BEGIN")
         try:
             yield conn
@@ -65,17 +70,16 @@ class SqlitePool:
             conn.rollback()
             logger.error(f"操作数据库异常：{e}")
         finally:
-            self.release(conn)
+            self._release(conn)
 
     def close_all(self):
         self._closed = True
-        while True:
-            try:
-                conn = self._pool.get_nowait()
+        # 等待所有连接放回池子并释放
+        with self._lock:
+            while self._created > 0:
+                conn = self._pool.get()
                 conn.close()
-            except queue.Empty:
-                break
-        self._created = 0
+                self._created -= 1
 
 
 db_pool = SqlitePool()
