@@ -116,7 +116,7 @@ class CopyMapping:
         # 更新数据库
         if update_ids:
             try:
-                with db_pool.transaction() as conn:
+                with db_pool.get_conn() as conn:
                     # 更新数据库，标记该条记录已完成复制
                     for update_id in update_ids:
                         conn.execute('''
@@ -179,7 +179,7 @@ class CopyMapping:
 
         # 开始事务
         try:
-            with db_pool.transaction() as conn:
+            with db_pool.get_conn() as conn:
                 # 更新所有目录复制记录，标记为已完成复制
                 for dir_path in dir_paths_to_update:
                     conn.execute('''
@@ -268,7 +268,7 @@ class CopyMapping:
 
         # 更新数据库，把old_path（source_path/target_path）替换为new_path
         try:
-            with db_pool.transaction() as conn:
+            with db_pool.get_conn() as conn:
                 # 更新原路径为old_path的记录
                 conn.execute('''
                 UPDATE copy_records 
@@ -333,7 +333,7 @@ class CopyMapping:
 
         # 更新数据库
         try:
-            with db_pool.transaction() as conn:
+            with db_pool.get_conn() as conn:
                 # 情况 A：更新目录本身（is_dir = 1 且路径完全匹配）
                 # 更新 source_path 匹配的记录
                 conn.execute('''

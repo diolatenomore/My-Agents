@@ -56,16 +56,6 @@ class SqlitePool:
 
     @contextmanager
     def get_conn(self):
-        conn = self.acquire()
-        try:
-            yield conn
-        except Exception as e:
-            logger.error(f"操作数据库异常：{e}")
-        finally:
-            self.release(conn)
-
-    @contextmanager
-    def transaction(self):
         """强制事务上下文，自动 BEGIN/COMMIT/ROLLBACK"""
         conn = self.acquire()
         conn.execute("BEGIN")

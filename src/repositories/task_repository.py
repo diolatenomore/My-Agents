@@ -9,21 +9,6 @@ from src.utils.common import logger
 
 
 class TaskRepository:
-    _instance = None
-    _instance_lock = threading.Lock()
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            with cls._instance_lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
-
-    def __init__(self):
-        if hasattr(self, '_initialized') and self._initialized:
-            return
-        self._initialized = True
-
     def _task_to_row(self, task: Task) -> Dict[str, Any]:
         return {
             "task_id": task.task_id,
@@ -93,11 +78,6 @@ class TaskRepository:
                 "SELECT * FROM tasks WHERE status = ? ORDER BY priority ASC, created_at ASC",
                 (status.value,)
             )
-            return [self._row_to_task(row) for row in cursor.fetchall()]
-
-    def get_all_tasks(self) -> List[Task]:
-        with db_pool.get_conn() as conn:
-            cursor = conn.execute("SELECT * FROM tasks ORDER BY priority ASC, created_at ASC")
             return [self._row_to_task(row) for row in cursor.fetchall()]
 
     def set_result(self, task_id: str, result: str, status: TaskStatus):

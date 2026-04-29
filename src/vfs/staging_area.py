@@ -214,7 +214,7 @@ class StagingArea:
 
         # 更新数据库
         try:
-            with db_pool.transaction() as conn:
+            with db_pool.get_conn() as conn:
                 cursor = conn.cursor()
 
                 # 处理主目录
@@ -279,7 +279,7 @@ class StagingArea:
 
         # 更新数据库
         try:
-            with db_pool.transaction() as conn:
+            with db_pool.get_conn() as conn:
                 cursor = conn.cursor()
 
                 # 检查旧路径是否存在
@@ -348,7 +348,7 @@ class StagingArea:
 
         # 更新数据库
         try:
-            with db_pool.transaction() as conn:
+            with db_pool.get_conn() as conn:
                 cursor = conn.cursor()
 
                 # 处理主目录
