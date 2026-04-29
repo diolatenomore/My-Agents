@@ -183,7 +183,6 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
 
     def should_continue_verify(state: FileOrganizeState):
         if state.get("verify_result") and state["verify_result"]:
-            print(state["verify_result"])
             # 简单判断验证结果
             if "banana" in str(state["verify_result"]) or "Banana" in str(state["verify_result"]):
                 return "end"

@@ -128,7 +128,7 @@ class TaskManager:
         # 任务完成后清理worker
         with self.worker_lock:
             if task_id in self.workers:
-                del self.workers[task_id]
+                del self.workers[task_id]  # 在内存的结果字典中删除
                 logger.info(f"[TaskManager] 任务 {task_id} 已完成，worker已清理")
 
     def get_result(self, task_id: str):
@@ -138,7 +138,7 @@ class TaskManager:
         with self.result_lock:
             result = self.results.get(task_id)
             if result is not None:
-                del self.results[task_id]  # 在内存中删除
+                del self.results[task_id]  # 在内存的结果字典中删除
                 return result
         return self.task_repo.get_result(task_id)
 

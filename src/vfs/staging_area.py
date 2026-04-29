@@ -201,7 +201,7 @@ class StagingArea:
         # 如果path在暂存区中，就删除暂存区中的目录
         staging_path = cls.get_staging_dir_path(path)
         if staging_path:
-            del cls.mapping[path]
+            cls.mapping.pop(path, None)
 
         # 更新缓存中的删除状态
         cls.deleted_dir_mapping[path] = True
@@ -209,7 +209,7 @@ class StagingArea:
         # 遍历deleted_dir_mapping，更新子目录的删除状态
         for dir_path in list(cls.deleted_dir_mapping.keys()):
             if dir_path.startswith(path + "/"):
-                del cls.mapping[dir_path]
+                cls.mapping.pop(dir_path, None)  # 不存在也不报错
                 cls.deleted_dir_mapping[dir_path] = True
 
         # 更新数据库
@@ -270,7 +270,7 @@ class StagingArea:
         """
         # 更新缓存中的路径映射关系
         cls.mapping[new_path] = cls.mapping[old_path]
-        del cls.mapping[old_path]
+        cls.mapping.pop(old_path, None)
 
         # 更新删除状态缓存
         cls.deleted_mapping[new_path] = cls.deleted_mapping[old_path]
@@ -323,7 +323,7 @@ class StagingArea:
         # 1、更新目录缓存
         # 更新缓存中的路径映射关系
         cls.mapping[new_dir_path] = cls.mapping[old_dir_path]
-        del cls.mapping[old_dir_path]
+        cls.mapping.pop(old_dir_path, None)
         # 更新删除状态缓存
         cls.deleted_dir_mapping[new_dir_path] = cls.deleted_dir_mapping[old_dir_path]
         # 标记原目录被删除
@@ -336,7 +336,7 @@ class StagingArea:
                 # 替换前缀
                 new_sub_path = new_dir_path + old_path[len(old_dir_path):]
                 cls.mapping[new_sub_path] = cls.mapping[old_path]
-                del cls.mapping[old_path]
+                cls.mapping.pop(old_path, None)
 
                 # 更新删除状态映射
                 if old_path in cls.deleted_mapping:

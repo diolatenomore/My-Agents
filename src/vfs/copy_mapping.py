@@ -263,8 +263,9 @@ class CopyMapping:
         if old_path in cls.copied_num:
             cls.copied_num[new_path] = cls.copied_num[old_path]
             cls.registered_num[new_path] = cls.registered_num[old_path]
-            del cls.copied_num[old_path]
-            del cls.registered_num[old_path]
+            cls.copied_num.pop(old_path, None)
+            cls.registered_num.pop(old_path, None)
+
 
         # 更新数据库，把old_path（source_path/target_path）替换为new_path
         try:
@@ -314,7 +315,7 @@ class CopyMapping:
                     new_paths.append(new_path)
 
                 cls.dir_copy_done[new_dir_path] = new_paths
-                del cls.dir_copy_done[old_dir_path]
+                cls.dir_copy_done.pop(old_dir_path, None)
 
         # 3. 处理 registered_num 和 copied_num 的前缀
         def replace_prefix(mapping):
