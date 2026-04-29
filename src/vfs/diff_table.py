@@ -126,7 +126,7 @@ class DiffTable:
                 record.created_at
             ))
         try:
-            with db_pool.transaction() as conn:
+            with db_pool.get_conn() as conn:
                 conn.executemany('''
                 INSERT INTO diff_records (task_id, operation_type, source_path, target_path, step, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)

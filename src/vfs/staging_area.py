@@ -448,7 +448,7 @@ class StagingArea:
         except Exception as e:
             logger.error(f"加载暂存区记录失败: {e}")
         
-        logger.debug(f"加载StagingArea记录成功，任务 ID: {task_id}")
+        logger.info(f"加载StagingArea记录成功，任务 ID: {task_id}")
                 
     @classmethod
     def clear(cls):
