@@ -11,39 +11,24 @@ from src.agents.file_organize_prompt import PLAN_AGENT_PROMPT, EXECUTE_AGENT_PRO
 from src.config import MODEL
 from src.models.state import FileOrganizeState
 from src.models.task import Task
-from src.tools.file_orgranzie_tools import (list_dir, read_file, create_file, delete_file,
-                                        rename_file, modify_file, copy_file, move_file, mkdir,
-                                        delete_dir, copy_dir, rename_dir, move_dir)
-import src.vfs.operations as ops
+from src.tools.registry import registry
 from src.utils.common import logger
 from src.vfs.task_context import set_current_task_id, clean_current_task_id
 from src.vfs.copy_mapping import CopyMapping
 from src.vfs.staging_area import StagingArea
 from vfs.task_context import get_task_id_with_no_error
 
-# TODO 不同agent的messages应该不同
-# 方法1: 使用独立字段xxxx_messages
-# 方法2: 每个阶段后清空messages
-# 方法3: 使用子图（checkpoint比较复杂）
+# 确保工具已注册（import 触发 self-register）
+import src.tools.file_orgranzie_tools  # noqa: F401
 
-# TODO 不同模型提供商返回的内容需要提取
+PLAN_TOOLS = ["list_dir", "read_file"]
+EXECUTE_TOOLS = [
+    "create_file", "delete_file", "rename_file", "modify_file",
+    "copy_file", "move_file", "mkdir", "delete_dir", "copy_dir",
+    "rename_dir", "move_dir", "list_dir", "read_file",
+]
+VERIFY_TOOLS = ["list_dir", "read_file"]
 
-# 实际调用的函数
-tools_by_name = {
-    "list_dir": ops.list_dir,
-    "read_file": ops.read_file,
-    "create_file": ops.create_file,
-    "delete_file": ops.delete_file,
-    "rename_file": ops.rename_file,
-    "modify_file": ops.modify_file,
-    "copy_file": ops.copy_file,
-    "move_file": ops.move_file,
-    "mkdir": ops.mkdir,
-    "delete_dir": ops.delete_dir,
-    "rename_dir": ops.rename_dir,
-    "copy_dir": ops.copy_dir,
-    "move_dir": ops.move_dir,
-}
 
 def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], Optional[Callable], Optional[Callable]]:
     def _init():
@@ -63,8 +48,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
 
     async def plan_node(state: FileOrganizeState) -> FileOrganizeState:
         model = ChatTongyi(model=MODEL)
-        tools = [list_dir, read_file]
-        model_with_tools = model.bind_tools(tools)
+        model_with_tools = model.bind_tools(registry.get_schemas(PLAN_TOOLS))
 
         # 初始化消息列表
         messages = state.get("messages", [])
@@ -90,8 +74,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
     async def plan_tool_node(state: FileOrganizeState) -> FileOrganizeState:
         result = []
         for tool_call in state["messages"][-1].tool_calls:
-            tool = tools_by_name[tool_call["name"]]
-            observation = tool(**tool_call["args"])
+            observation = registry.dispatch(tool_call["name"], tool_call["args"])
             result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
             logger.info(f"plan阶段  工具: {tool_call['name']}    参数: {tool_call['args']}")
             logger.info(f"工具返回：{observation}")
@@ -100,15 +83,11 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
     def should_continue_plan(state: FileOrganizeState):
         if state.get("plan_result"):
             return "execute"
-
         return "plan_tool_node"
 
     async def execute_node(state: FileOrganizeState) -> FileOrganizeState:
         model = ChatTongyi(model=MODEL)
-        tools = [create_file, delete_file, rename_file, modify_file, copy_file, move_file,
-                 mkdir, delete_dir, copy_dir, rename_dir, move_dir,
-                 list_dir, read_file]
-        model_with_tools = model.bind_tools(tools)
+        model_with_tools = model.bind_tools(registry.get_schemas(EXECUTE_TOOLS))
 
         # 初始化消息列表
         messages = state.get("messages", [])
@@ -135,8 +114,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
     async def execute_tool_node(state: FileOrganizeState) -> FileOrganizeState:
         result = []
         for tool_call in state["messages"][-1].tool_calls:
-            tool = tools_by_name[tool_call["name"]]
-            observation = tool(**tool_call["args"])
+            observation = registry.dispatch(tool_call["name"], tool_call["args"])
             result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
             logger.info(f"execute阶段  工具: {tool_call['name']}    参数: {tool_call['args']}")
             logger.info(f"工具返回{observation}")
@@ -145,13 +123,11 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
     def should_continue_execute(state: FileOrganizeState):
         if state.get("execute_result") and state["execute_result"]:
             return "verify"
-
         return "execute_tool_node"
 
     async def verify_node(state: FileOrganizeState) -> FileOrganizeState:
         model = ChatTongyi(model=MODEL)
-        tools = [list_dir, read_file]
-        model_with_tools = model.bind_tools(tools)
+        model_with_tools = model.bind_tools(registry.get_schemas(VERIFY_TOOLS))
 
         # 初始化消息列表
         messages = state.get("messages", [])
@@ -178,8 +154,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
     async def verify_tool_node(state: FileOrganizeState) -> FileOrganizeState:
         result = []
         for tool_call in state["messages"][-1].tool_calls:
-            tool = tools_by_name[tool_call["name"]]
-            observation = tool(**tool_call["args"])
+            observation = registry.dispatch(tool_call["name"], tool_call["args"])
             result.append(ToolMessage(content=observation, tool_call_id=tool_call["id"]))
             logger.info(f"verify阶段  工具: {tool_call['name']}    参数: {tool_call['args']}")
             logger.info(f"工具返回：{observation}")
@@ -244,4 +219,3 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
     }
 
     return workflow, initial_state, _init, _cleanup
-

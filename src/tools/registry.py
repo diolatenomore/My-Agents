@@ -1,0 +1,219 @@
+import asyncio
+import inspect
+import threading
+from typing import Any, Callable, Dict, List, Optional, Type
+
+from pydantic import BaseModel
+
+from src.utils.common import logger
+
+
+class ToolEntry:
+    """Metadata for a single registered tool."""
+
+    def __init__(self, name, description, schema, handler):
+        self.name = name
+        self.description = description
+        self.schema = schema
+        self.handler = handler
+
+
+def _pydantic_to_openai_params(model: Type[BaseModel]) -> Dict[str, Any]:
+    """将 Pydantic BaseModel 转换为 OpenAI Function Calling 的 parameters"""
+    schema = model.model_json_schema()
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+
+    cleaned_properties = {}
+    for name, prop in properties.items():
+        cleaned = {"type": prop.get("type", "string")}
+        if "description" in prop:
+            cleaned["description"] = prop["description"]
+        if "enum" in prop:
+            cleaned["enum"] = prop["enum"]
+        cleaned_properties[name] = cleaned
+
+    return {
+        "type": "object",
+        "properties": cleaned_properties,
+        "required": required,
+    }
+
+
+def _infer_params_from_fn(fn: Callable) -> Dict[str, Any]:
+    """从函数签名推断参数 schema"""
+    sig = inspect.signature(fn)
+    properties = {}
+    required = []
+    for name, param in sig.parameters.items():
+        if name in ("self", "cls", "return"):
+            continue
+        properties[name] = {"type": "string", "description": f"参数 {name}"}
+        if param.default is inspect.Parameter.empty:
+            required.append(name)
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    }
+
+
+class ToolRegistry:
+    """工具注册中心 — 单例，仿 Hermes 的自注册模式"""
+
+    def __init__(self):
+        self._tools: Dict[str, ToolEntry] = {}
+        self._lock = threading.RLock()
+        # 事件循环作为成员变量
+        self._tool_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._tool_loop_thread: Optional[threading.Thread] = None
+        self._tool_loop_init_lock = threading.Lock()
+
+    def _get_tool_loop(self) -> asyncio.AbstractEventLoop:
+        """获取实例级别的持久事件循环"""
+        with self._tool_loop_init_lock:
+            if self._tool_loop is None or self._tool_loop.is_closed():
+                self._tool_loop = asyncio.new_event_loop()
+                self._tool_loop_thread = threading.Thread(
+                    target=self._tool_loop.run_forever,
+                    daemon=True,
+                    name=f"tool-event-loop-{id(self)}",
+                )
+                self._tool_loop_thread.start()
+            return self._tool_loop
+
+    def _run_async(self, coro) -> Any:
+        """在同步函数中运行异步协程"""
+        loop = self._get_tool_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
+    def register(
+        self,
+        name: str,
+        description: str,
+        handler: Callable,
+        parameters: Optional[Dict[str, Any]] = None,
+        args_schema: Optional[Type[BaseModel]] = None,
+    ):
+        """注册一个工具
+
+        Args:
+            name: 工具名称（必须唯一，与 LLM tool_call 中的 name 匹配）
+            description: 工具描述（LLM 据此决定是否调用）
+            handler: 处理函数（同步或异步，接收 **kwargs，返回字符串）
+            parameters: OpenAI 格式的 parameters dict（与 args_schema 二选一）
+            args_schema: Pydantic BaseModel，自动转为 parameters
+        """
+        with self._lock:
+            if name in self._tools:
+                logger.warning(f"工具 '{name}' 重复注册，将被覆盖")
+
+            if parameters is None and args_schema is not None:
+                parameters = _pydantic_to_openai_params(args_schema)
+            elif parameters is None:
+                parameters = _infer_params_from_fn(handler)
+
+            self._tools[name] = ToolEntry(
+                name=name,
+                description=description,
+                schema=parameters,
+                handler=handler,
+            )
+            logger.debug(f"工具已注册: {name}")
+
+    def get(self, name: str) -> Optional[ToolEntry]:
+        with self._lock:
+            return self._tools.get(name)
+
+    def list_tools(self) -> List[str]:
+        with self._lock:
+            return list(self._tools.keys())
+
+    def get_schemas(self, names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        """获取 OpenAI Function Calling 格式的工具定义列表
+
+        Args:
+            names: 只返回指定名称的工具，None 表示全部
+        """
+        with self._lock:
+            if names is None:
+                entries = list(self._tools.values())
+            else:
+                entries = [self._tools[n] for n in names if n in self._tools]
+
+            return [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": e.name,
+                        "description": e.description,
+                        "parameters": e.schema,
+                    },
+                }
+                for e in entries
+            ]
+
+    def bind_tools(self, model, names: Optional[List[str]] = None):
+        """绑定工具到 LangChain 模型"""
+        return model.bind_tools(self.get_schemas(names))
+
+    def dispatch(self, name: str, args: Dict[str, Any]) -> str:
+        """执行单个工具调用
+
+        Args:
+            name: 工具名称
+            args: 工具参数字典
+
+        Returns:
+            工具执行结果字符串
+        """
+        with self._lock:
+            entry = self._tools.get(name)
+
+        if not entry:
+            return f"错误：找不到工具 '{name}'"
+
+        try:
+            handler = entry.handler
+            if inspect.iscoroutinefunction(handler):
+                observation = self._run_async(handler(**args))
+            else:
+                observation = handler(**args)
+            return str(observation)
+        except Exception as e:
+            logger.error(f"工具 '{name}' 执行失败: {e}", exc_info=True)
+            return f"工具 '{name}' 执行失败: {str(e)}"
+
+    def to_langchain_tool(self, name: str):
+        """将已注册的工具包装为 LangChain BaseTool（用于 deepagents 等兼容）"""
+        from langchain_core.tools import BaseTool as LangChainBaseTool
+
+        entry = self.get(name)
+        if not entry:
+            raise ValueError(f"工具 '{name}' 未注册")
+
+        handler = entry.handler
+        is_async = inspect.iscoroutinefunction(handler)
+
+        class _Adapter(LangChainBaseTool):
+            name: str = entry.name
+            description: str = entry.description
+
+            def _run(self, **kwargs) -> str:
+                return handler(**kwargs)
+
+            async def _arun(self, **kwargs) -> str:
+                if is_async:
+                    return await handler(**kwargs)
+                return handler(**kwargs)
+
+        return _Adapter()
+
+    def to_langchain_list(self, names: List[str]) -> List:
+        """批量转 LangChain BaseTool"""
+        return [self.to_langchain_tool(n) for n in names]
+
+
+# 全局单例
+registry = ToolRegistry()
