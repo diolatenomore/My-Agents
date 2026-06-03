@@ -4,7 +4,9 @@ _project_root = os.path.dirname(os.path.abspath(__file__))  # 获取 src 目录
 _project_root = os.path.dirname(_project_root)  # 获取项目根目录
 
 # 模型配置
-MODEL = "qwen3-vl-235b-a22b-thinking"
+MODEL = "deepseek-v4-flash"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 
 # checkpoint数据库配置
 CHECKPOINT_DB_PATH = os.path.join(_project_root, "workspace/checkpoints.db")

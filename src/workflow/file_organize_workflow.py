@@ -1,14 +1,14 @@
 from typing import Any, Callable, Dict, Tuple, Optional
 
-from langchain_community.chat_models import ChatTongyi
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 from langchain_core.prompts import PromptTemplate
+from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph
 from langgraph.constants import END
 
 from src.agents.file_organize_prompt import PLAN_AGENT_PROMPT, EXECUTE_AGENT_PROMPT, VERIFY_AGENT_PROMPT, \
     PLAN_INPUT_TEMPLATE, EXECUTE_INPUT_TEMPLATE, VERIFY_INPUT_PROMPT
-from src.config import MODEL
+from src.config import MODEL, DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
 from src.models.state import FileOrganizeState
 from src.models.task import Task
 from src.tools.registry import registry
@@ -16,10 +16,8 @@ from src.utils.common import logger
 from src.vfs.task_context import set_current_task_id, clean_current_task_id
 from src.vfs.copy_mapping import CopyMapping
 from src.vfs.staging_area import StagingArea
-from vfs.task_context import get_task_id_with_no_error
+from src.vfs.task_context import get_task_id_with_no_error
 
-# 确保工具已注册（import 触发 self-register）
-import src.tools.file_orgranzie_tools  # noqa: F401
 
 PLAN_TOOLS = ["list_dir", "read_file"]
 EXECUTE_TOOLS = [
@@ -47,7 +45,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
             clean_current_task_id()
 
     async def plan_node(state: FileOrganizeState) -> FileOrganizeState:
-        model = ChatTongyi(model=MODEL)
+        model = ChatOpenAI(model=MODEL, base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
         model_with_tools = model.bind_tools(registry.get_schemas(PLAN_TOOLS))
 
         # 初始化消息列表
@@ -86,7 +84,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
         return "plan_tool_node"
 
     async def execute_node(state: FileOrganizeState) -> FileOrganizeState:
-        model = ChatTongyi(model=MODEL)
+        model = ChatOpenAI(model=MODEL, base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
         model_with_tools = model.bind_tools(registry.get_schemas(EXECUTE_TOOLS))
 
         # 初始化消息列表
@@ -126,7 +124,7 @@ def create_file_organize_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any], 
         return "execute_tool_node"
 
     async def verify_node(state: FileOrganizeState) -> FileOrganizeState:
-        model = ChatTongyi(model=MODEL)
+        model = ChatOpenAI(model=MODEL, base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
         model_with_tools = model.bind_tools(registry.get_schemas(VERIFY_TOOLS))
 
         # 初始化消息列表

@@ -2,12 +2,12 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
-from langchain_community.chat_models import ChatTongyi
+from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph
 from langgraph.constants import END
 
 from src.agents.research_write_prompt import RESEARCH_PROMPT, WRITE_PROMPT
-from src.config import AGENT_WORKSPACE_PATH, MODEL
+from src.config import AGENT_WORKSPACE_PATH, MODEL, DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
 from src.models.state import ResearchWriteState
 from src.models.task import Task
 from src.tools.research_write_tools import tavily_search, write_file, read_file
@@ -20,14 +20,14 @@ def create_research_write_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any],
 
     # 创建代理
     research_agent = create_deep_agent(
-        model=ChatTongyi(model=MODEL),
+        model=ChatOpenAI(model=MODEL, base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY),
         backend=backend,
         tools=[tavily_search, write_file],
         skills=["web-research"],
         system_prompt=RESEARCH_PROMPT
     )
     write_agent = create_deep_agent(
-        model=ChatTongyi(model=MODEL),
+        model=ChatOpenAI(model=MODEL, base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY),
         backend=backend,
         tools=[read_file, write_file],
         system_prompt=WRITE_PROMPT
@@ -36,7 +36,7 @@ def create_research_write_graph(task: Task) -> Tuple[StateGraph, Dict[str, Any],
 
     # 创建监督节点
     async def supervisor_node(state: ResearchWriteState) -> ResearchWriteState:
-        model = ChatTongyi(model=MODEL)
+        model = ChatOpenAI(model=MODEL, base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
         state_str = f"当前状态：\n- 研究结果：{'None' if not state.get('research_file') else '已完成'}\n- 写作结果：{'None' if not state.get('write_file') else '已完成'}"
         print(state_str)
 
