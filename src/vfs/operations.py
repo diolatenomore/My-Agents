@@ -279,7 +279,6 @@ def copy_file(source_path: str, target_path: str):
 
 
 def move_file(source_path: str, target_path: str):
-    # TODO 待实现+优化，按照当前的机制，会立即触发拷贝，
     task_id = get_current_task_id()
 
     # 检查source_path是否存在 （真实路径）
