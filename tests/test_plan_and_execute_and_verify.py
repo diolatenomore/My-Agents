@@ -10,7 +10,7 @@ from src.workflow.file_organize_workflow import create_file_organize_graph
 
 
 async def test():
-    task_id = "task000"
+    task_id = "task0003"
     config = {"configurable": {"thread_id": task_id}}
     task = Task(
         task_id=task_id,

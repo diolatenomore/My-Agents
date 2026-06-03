@@ -5,14 +5,13 @@ import os
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.abspath('.'))
 
-from langchain_community.chat_models import ChatTongyi
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
 from src.agents.file_organize_prompt import PLAN_AGENT_PROMPT, PLAN_INPUT_TEMPLATE
-from src.config import MODEL
+from src.config import MODEL, DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
 from src.vfs.operations import list_dir, read_file
-from src.vfs.context_manager import task_scope
 
 
 # 创建工具
@@ -37,7 +36,7 @@ async def test_plan_agent():
     test_query = "整理 /Users/tinklingowl/PycharmProjects/AI-Agents/workspace 目录的文件，按类型分类"
     
     # 初始化模型和工具
-    model = ChatTongyi(model=MODEL)
+    model = ChatOpenAI(model=MODEL, base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
     tools = [list_dir_tool, read_file_tool]
     model_with_tools = model.bind_tools(tools)
     
