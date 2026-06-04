@@ -90,10 +90,10 @@ class DiffTable:
     """操作记录交互类，可以存储任务中的操作记录，输出待审核结果"""
     
     @staticmethod
-    def operate(record: DiffRecord):
+    async def operate(record: DiffRecord):
         try:
-            with db_pool.get_conn() as conn:
-                conn.execute('''
+            async with db_pool.get_conn() as conn:
+                await conn.execute('''
                 INSERT INTO diff_records (task_id, operation_type, source_path, target_path, step, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
@@ -104,12 +104,11 @@ class DiffTable:
                     record.step,
                     record.created_at
                 ))
-                conn.commit()
         except Exception as e:
             logger.error(f"写入操作记录失败: {e}")
 
     @staticmethod
-    def operate_batch(records: List[DiffRecord]):
+    async def operate_batch(records: List[DiffRecord]):
         """
         批量写入数据库
         """
@@ -126,31 +125,31 @@ class DiffTable:
                 record.created_at
             ))
         try:
-            with db_pool.get_conn() as conn:
-                conn.executemany('''
+            async with db_pool.get_conn() as conn:
+                await conn.executemany('''
                 INSERT INTO diff_records (task_id, operation_type, source_path, target_path, step, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 ''', data)
-                conn.commit()
         except Exception as e:
             logger.error(f"批量写入操作记录失败: {e}")
 
     @staticmethod
-    def list(task_id: str) -> List[DiffRecord]:
+    async def list(task_id: str) -> List[DiffRecord]:
         """
         根据task_id导出所有操作
         """
         records = []
         try:
-            with db_pool.get_conn() as conn:
-                cursor = conn.execute('''
+            async with db_pool.get_conn() as conn:
+                cursor = await conn.execute('''
                 SELECT id, task_id, operation_type, source_path, target_path, step, created_at
                 FROM diff_records
                 WHERE task_id = ?
                 ORDER BY created_at ASC
                 ''', (task_id,))
 
-                for row in cursor.fetchall():
+                rows = await cursor.fetchall()
+                for row in rows:
                     record = DiffRecord(
                         task_id=row['task_id'],
                         operation_type=OperationType(row['operation_type']),

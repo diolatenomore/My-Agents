@@ -28,9 +28,7 @@ class StagingArea:
 
     @classmethod
     def get_staging_path(cls, path: str) -> str | None:
-        """
-        获取暂存区路径，如果已被删除或不存在则返回None
-        """
+        """获取暂存区路径，如果已被删除或不存在则返回 None"""
         if not cls.deleted_mapping.get(path, False) and path in cls.mapping:
             # 遍历deleted_dir_mapping，检查path是否在已删除的目录下
             for dir_path, is_deleted in cls.deleted_dir_mapping.items():
@@ -53,7 +51,7 @@ class StagingArea:
         return None
 
     @classmethod
-    def register(cls, path: str) -> str:
+    async def register(cls, path: str) -> str:
         """
         分配一条暂存区路径
         """
@@ -70,38 +68,32 @@ class StagingArea:
 
         # 写入数据库
         try:
-            with db_pool.get_conn() as conn:
-                cursor = conn.cursor()
-                # 检查是否已存在记录
-                cursor.execute('''
-                SELECT id FROM staging_records 
-                WHERE task_id = ? AND path = ?
-                ''', (cls.task_id, path))
-
-                existing = cursor.fetchone()
+            async with db_pool.get_conn() as conn:
+                cursor = await conn.execute(
+                    "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
+                    (cls.task_id, path),
+                )
+                existing = await cursor.fetchone()
                 if existing:
                     # 更新现有记录
-                    cursor.execute('''
-                    UPDATE staging_records 
-                    SET staging_path = ?, deleted = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    ''', (staging_path, False, existing['id']))
+                    await conn.execute(
+                        "UPDATE staging_records SET staging_path = ?, deleted = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (staging_path, False, existing["id"]),
+                    )
                 else:
                     # 插入新记录
-                    cursor.execute('''
-                    INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted)
-                    VALUES (?, ?, ?, ?, ?)
-                    ''', (cls.task_id, path, staging_path, False, False))
-
-                conn.commit()
+                    await conn.execute(
+                        "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
+                        (cls.task_id, path, staging_path, False, False),
+                    )
         except Exception as e:
-            logger.error(f"写入暂存区记录失败: {e}")
+            logger.error(f"写入暂存区记录失败: {e}")  # TODO 会不会rollback？
 
         logger.debug(f"为文件{path}分配暂存区路径: {staging_path}")
         return staging_path
 
     @classmethod
-    def register_dir(cls, path: str) -> str:
+    async def register_dir(cls, path: str) -> str:
         """
         分配一条目录暂存区路径
         """
@@ -112,30 +104,22 @@ class StagingArea:
 
         # 写入数据库
         try:
-            with db_pool.get_conn() as conn:
-                cursor = conn.cursor()
-                # 检查是否已存在记录
-                cursor.execute('''
-                SELECT id FROM staging_records 
-                WHERE task_id = ? AND path = ?
-                ''', (cls.task_id, path))
-
-                existing = cursor.fetchone()
+            async with db_pool.get_conn() as conn:
+                cursor = await conn.execute(
+                    "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
+                    (cls.task_id, path),
+                )
+                existing = await cursor.fetchone()
                 if existing:
-                    # 更新现有记录
-                    cursor.execute('''
-                    UPDATE staging_records 
-                    SET staging_path = ?, is_dir = ?, deleted = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    ''', (staging_path, True, False, existing['id']))
+                    await conn.execute(
+                        "UPDATE staging_records SET staging_path = ?, is_dir = ?, deleted = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (staging_path, True, False, existing["id"]),
+                    )
                 else:
-                    # 插入新记录
-                    cursor.execute('''
-                    INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted)
-                    VALUES (?, ?, ?, ?, ?)
-                    ''', (cls.task_id, path, staging_path, True, False))
-
-                conn.commit()
+                    await conn.execute(
+                        "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
+                        (cls.task_id, path, staging_path, True, False),
+                    )
         except Exception as e:
             logger.error(f"写入暂存区目录记录失败: {e}")
 
@@ -143,49 +127,33 @@ class StagingArea:
         return staging_path
 
     @classmethod
-    def delete(cls, path: str) -> None:
+    async def delete(cls, path: str) -> None:
         """
         删除暂存区路径（设置deleted为True）
         """
-        # # 如果path在暂存区中，就删除暂存区中的文件
-        # staging_path = cls.get_staging_path(path)
-        # if staging_path:
-        #     del cls.mapping[path]
-        #     # TODO: 删除文件
-        #     # delete(staging_path)
-
-        # 更新缓存中的删除状态
         cls.deleted_mapping[path] = True
 
         # 更新数据库
         try:
-            with db_pool.get_conn() as conn:
-                cursor = conn.cursor()
-                # 检查是否已存在记录
-                cursor.execute('''
-                SELECT id FROM staging_records 
-                WHERE task_id = ? AND path = ?
-                ''', (cls.task_id, path))
-
-                existing = cursor.fetchone()
+            async with db_pool.get_conn() as conn:
+                cursor = await conn.execute(
+                    "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
+                    (cls.task_id, path),
+                )
+                existing = await cursor.fetchone()
                 if existing:
-                    # 更新现有记录
-                    cursor.execute('''
-                    UPDATE staging_records 
-                    SET deleted = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    ''', (True, existing['id']))
+                    await conn.execute(
+                        "UPDATE staging_records SET deleted = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (True, existing["id"]),
+                    )
                 else:
-                    # 插入新记录
-                    cursor.execute('''
-                    INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted)
-                    VALUES (?, ?, ?, ?, ?)
-                    ''', (cls.task_id, path, None, False, True))
-
-                conn.commit()
+                    await conn.execute(
+                        "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
+                        (cls.task_id, path, None, False, True),
+                    )
         except Exception as e:
             logger.error(f"更新暂存区删除状态失败: {e}")
-        
+
         logger.debug(f"在暂存区删除文件{path}")
 
     @classmethod
@@ -194,7 +162,7 @@ class StagingArea:
         return cls.deleted_mapping.get(path, False)
 
     @classmethod
-    def delete_dir(cls, path: str):
+    async def delete_dir(cls, path: str):
         """
         删除目录暂存区路径（设置deleted为True）
         """
@@ -212,50 +180,39 @@ class StagingArea:
                 cls.mapping.pop(dir_path, None)  # 不存在也不报错
                 cls.deleted_dir_mapping[dir_path] = True
 
-        # 更新数据库
         try:
-            with db_pool.get_conn() as conn:
-                cursor = conn.cursor()
-
+            async with db_pool.get_conn() as conn:
                 # 处理主目录
                 # 检查是否已存在记录
-                cursor.execute('''
-                SELECT id FROM staging_records 
-                WHERE task_id = ? AND path = ?
-                ''', (cls.task_id, path))
-
-                existing = cursor.fetchone()
+                cursor = await conn.execute(
+                    "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
+                    (cls.task_id, path),
+                )
+                existing = await cursor.fetchone()
                 if existing:
-                    # 更新现有记录
-                    cursor.execute('''
-                    UPDATE staging_records 
-                    SET deleted = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    ''', (True, existing['id']))
+                    await conn.execute(
+                        "UPDATE staging_records SET deleted = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (True, existing["id"]),
+                    )
                 else:
-                    # 插入新记录
-                    cursor.execute('''
-                    INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted)
-                    VALUES (?, ?, ?, ?, ?)
-                    ''', (cls.task_id, path, None, True, True))
+                    await conn.execute(
+                        "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
+                        (cls.task_id, path, None, True, True),
+                    )
 
                 # 处理子目录
-                cursor.execute('''
-                SELECT id FROM staging_records 
-                WHERE task_id = ? AND path LIKE ? AND is_dir = True
-                ''', (cls.task_id, path + '/%'))
-
-                for row in cursor.fetchall():
-                    cursor.execute('''
-                    UPDATE staging_records 
-                    SET deleted = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    ''', (True, row['id']))
-
-                conn.commit()
+                cursor = await conn.execute(
+                    "SELECT id FROM staging_records WHERE task_id = ? AND path LIKE ? AND is_dir = 1",
+                    (cls.task_id, path + "/%"),
+                )
+                for row in await cursor.fetchall():
+                    await conn.execute(
+                        "UPDATE staging_records SET deleted = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (True, row["id"]),
+                    )
         except Exception as e:
             logger.error(f"更新暂存区目录删除状态失败: {e}")
-        
+
         logger.debug(f"在暂存区删除目录{path}")
 
     @classmethod
@@ -264,7 +221,7 @@ class StagingArea:
         return cls.deleted_dir_mapping.get(path, False)
 
     @classmethod
-    def rename(cls, old_path: str, new_path: str) -> None:
+    async def rename(cls, old_path: str, new_path: str) -> None:
         """
         重命名暂存区路径
         """
@@ -279,44 +236,38 @@ class StagingArea:
 
         # 更新数据库
         try:
-            with db_pool.get_conn() as conn:
-                cursor = conn.cursor()
-
+            async with db_pool.get_conn() as conn:
                 # 检查旧路径是否存在
-                cursor.execute('''
-                SELECT id FROM staging_records 
-                WHERE task_id = ? AND path = ?
-                ''', (cls.task_id, old_path))
-
-                existing = cursor.fetchone()
+                cursor = await conn.execute(
+                    "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
+                    (cls.task_id, old_path),
+                )
+                existing = await cursor.fetchone()
                 if existing:
                     # 更新旧路径记录为已删除
-                    cursor.execute('''
-                    UPDATE staging_records 
-                    SET deleted = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    ''', (True, existing['id']))
+                    await conn.execute(
+                        "UPDATE staging_records SET deleted = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (True, existing["id"]),
+                    )
                 else:
                     # 插入旧路径删除记录
-                    cursor.execute('''
-                    INSERT INTO staging_records (task_id, path, is_dir, deleted)
-                    VALUES (?, ?, ?, ?)
-                    ''', (cls.task_id, old_path, False, True))
+                    await conn.execute(
+                        "INSERT INTO staging_records (task_id, path, is_dir, deleted) VALUES (?, ?, ?, ?)",
+                        (cls.task_id, old_path, False, True),
+                    )
 
                 # 插入新路径记录
-                cursor.execute('''
-                INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted)
-                VALUES (?, ?, ?, ?, ?)
-                ''', (cls.task_id, new_path, cls.mapping[new_path], False, False))
-
-                conn.commit()
+                await conn.execute(
+                    "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
+                    (cls.task_id, new_path, cls.mapping[new_path], False, False),
+                )
         except Exception as e:
             logger.error(f"更新暂存区重命名状态失败: {e}")
-        
+
         logger.debug(f"在暂存区重命名文件{old_path}为{new_path}")
-                
+
     @classmethod
-    def rename_dir(cls, old_dir_path: str, new_dir_path: str) -> None:
+    async def rename_dir(cls, old_dir_path: str, new_dir_path: str) -> None:
         """
         重命名目录暂存区路径
         """
@@ -348,65 +299,56 @@ class StagingArea:
 
         # 更新数据库
         try:
-            with db_pool.get_conn() as conn:
-                cursor = conn.cursor()
-
+            async with db_pool.get_conn() as conn:
                 # 处理主目录
                 # 检查旧目录记录是否存在
-                cursor.execute('''
-                SELECT id FROM staging_records 
-                WHERE task_id = ? AND path = ?
-                ''', (cls.task_id, old_dir_path))
-
-                existing = cursor.fetchone()
+                cursor = await conn.execute(
+                    "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
+                    (cls.task_id, old_dir_path),
+                )
+                existing = await cursor.fetchone()
                 if existing:
-                    # 更新旧目录记录为已删除
-                    cursor.execute('''
-                    UPDATE staging_records 
-                    SET deleted = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    ''', (True, existing['id']))
+                    await conn.execute(
+                        "UPDATE staging_records SET deleted = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (True, existing["id"]),
+                    )
                 else:
-                    cursor.execute('''
-                    INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted)
-                    VALUES (?, ?, ?, ?, ?)
-                    ''', (cls.task_id, old_dir_path, None, True, True))
+                    await conn.execute(
+                        "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
+                        (cls.task_id, old_dir_path, None, True, True),
+                    )
 
                 # 插入新目录记录
-                cursor.execute('''
-                INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted)
-                VALUES (?, ?, ?, ?, ?)
-                ''', (cls.task_id, new_dir_path, cls.mapping[new_dir_path], True, False))
+                await conn.execute(
+                    "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
+                    (cls.task_id, new_dir_path, cls.mapping[new_dir_path], True, False),
+                )
 
                 # 处理子目录和文件
-                cursor.execute('''
-                SELECT id, path, staging_path, is_dir FROM staging_records 
-                WHERE task_id = ? AND path LIKE ? AND is_dir = TRUE
-                ''', (cls.task_id, old_dir_path + '/%'))
-
-                for row in cursor.fetchall():
-                    old_sub_path = row['path']
+                cursor = await conn.execute(
+                    "SELECT id, path, staging_path, is_dir FROM staging_records WHERE task_id = ? AND path LIKE ? AND is_dir = 1",
+                    (cls.task_id, old_dir_path + "/%"),
+                )
+                for row in await cursor.fetchall():
+                    old_sub_path = row["path"]
                     new_sub_path = new_dir_path + old_sub_path[len(old_dir_path):]
                     # 更新旧路径为已删除
-                    cursor.execute('''
-                    UPDATE staging_records 
-                    SET deleted = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    ''', (True, row['id']))
+                    await conn.execute(
+                        "UPDATE staging_records SET deleted = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (True, row["id"]),
+                    )
                     # 插入新路径记录
-                    cursor.execute('''
-                    INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted)
-                    VALUES (?, ?, ?, ?, ?)
-                    ''', (cls.task_id, new_sub_path, row['staging_path'], row['is_dir'], False))
-
-                conn.commit()
+                    await conn.execute(
+                        "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
+                        (cls.task_id, new_sub_path, row["staging_path"], row["is_dir"], False),
+                    )
         except Exception as e:
             logger.error(f"更新暂存区目录重命名状态失败: {e}")
-        
+
         logger.debug(f"在暂存区重命名目录{old_dir_path}为{new_dir_path}")
-                
+
     @classmethod
-    def load(cls, task_id: str):
+    async def load(cls, task_id: str):
         """
         从数据库加载暂存区
 
@@ -421,20 +363,16 @@ class StagingArea:
 
         # 从数据库加载记录
         try:
-            with db_pool.get_conn() as conn:
-                cursor = conn.cursor()
-                # 查询所有该任务的暂存区记录
-                cursor.execute('''
-                SELECT path, staging_path, is_dir, deleted
-                FROM staging_records
-                WHERE task_id = ?
-                ''', (task_id,))
-
-                for row in cursor.fetchall():
-                    path = row['path']
-                    staging_path = row['staging_path']
-                    is_dir = row['is_dir']
-                    deleted = row['deleted']
+            async with db_pool.get_conn() as conn:
+                cursor = await conn.execute(
+                    "SELECT path, staging_path, is_dir, deleted FROM staging_records WHERE task_id = ?",
+                    (task_id,),
+                )
+                for row in await cursor.fetchall():
+                    path = row["path"]
+                    staging_path = row["staging_path"]
+                    is_dir = row["is_dir"]
+                    deleted = row["deleted"]
 
                     # 更新映射缓存
                     if staging_path is not None:
@@ -447,9 +385,9 @@ class StagingArea:
                         cls.deleted_mapping[path] = deleted
         except Exception as e:
             logger.error(f"加载暂存区记录失败: {e}")
-        
+
         logger.info(f"加载StagingArea记录成功，任务 ID: {task_id}")
-                
+
     @classmethod
     def clear(cls):
         """清空缓存"""
@@ -458,4 +396,3 @@ class StagingArea:
         cls.deleted_mapping.clear()
         cls.deleted_dir_mapping.clear()
         logger.info("StagingArea清空成功")
-

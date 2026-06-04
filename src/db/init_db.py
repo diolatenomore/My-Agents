@@ -2,10 +2,9 @@ from src.db.sqlite_pool import db_pool
 from src.utils.common import logger
 
 
-def init_db():
-    with db_pool.get_conn() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
+async def init_db():
+    async with db_pool.get_conn() as conn:
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS tasks (
                 task_id TEXT PRIMARY KEY,
                 priority INTEGER NOT NULL,
@@ -18,7 +17,7 @@ def init_db():
             )
         """)
 
-        cursor.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS task_results (
                 task_id TEXT PRIMARY KEY,
                 result TEXT NULL,
@@ -28,7 +27,7 @@ def init_db():
             )
         """)
 
-        cursor.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS copy_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
@@ -41,11 +40,11 @@ def init_db():
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_copy_records_task_id ON copy_records(task_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_copy_records_source_path ON copy_records(source_path)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_copy_records_target_path ON copy_records(target_path)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_copy_records_task_id ON copy_records(task_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_copy_records_source_path ON copy_records(source_path)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_copy_records_target_path ON copy_records(target_path)")
 
-        cursor.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS staging_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
@@ -57,10 +56,9 @@ def init_db():
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_staging_records_task_id ON staging_records(task_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_staging_records_task_id ON staging_records(task_id)")
 
-
-        cursor.execute("""
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS diff_records (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
@@ -71,8 +69,26 @@ def init_db():
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_diff_records_task_id ON diff_records(task_id)")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_diff_records_task_id ON diff_records(task_id)")
 
-        conn.commit()
+        # Session 管理表
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                title TEXT DEFAULT '',
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_session_messages_sid ON session_messages(session_id)")
 
     logger.info("数据库所有表初始化完成")

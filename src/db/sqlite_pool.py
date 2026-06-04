@@ -1,85 +1,92 @@
-import sqlite3
+"""异步 SQLite 连接池，基于 aiosqlite"""
+
+import asyncio
 import os
-import queue
-import threading
-from contextlib import contextmanager
+import sqlite3
+
+import aiosqlite
+from contextlib import asynccontextmanager
 
 from src.config import DB_PATH, MAX_CONNECTIONS, CONNECT_TIMEOUT
 from src.utils.common import logger
 
 
-class SqlitePool:
+class AsyncSqlitePool:
+    """异步 SQLite 连接池（WAL 模式，支持并发读）"""
+
     def __init__(self):
         self.db_path = DB_PATH
-        self._pool = queue.Queue(maxsize=MAX_CONNECTIONS)
-        self._lock = threading.Lock()
+        self._pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=MAX_CONNECTIONS)
         self._created = 0
         self._closed = False
+        self._lock = asyncio.Lock()
 
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-    def _create_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+    async def _create_connection(self) -> aiosqlite.Connection:
+        conn = await aiosqlite.connect(self.db_path)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA synchronous = NORMAL")
         return conn
 
-    def _acquire(self) -> sqlite3.Connection:
+    async def _acquire(self) -> aiosqlite.Connection:
         if self._closed:
             raise RuntimeError("连接池已关闭，无法获取连接")
 
         try:
             conn = self._pool.get_nowait()
             return conn
-        except queue.Empty:
+        except asyncio.QueueEmpty:
             pass
 
-        with self._lock:
+        async with self._lock:
             if self._created < MAX_CONNECTIONS:
-                conn = self._create_connection()
+                conn = await self._create_connection()
                 self._created += 1
                 return conn
-        
+
         try:
-            conn = self._pool.get(timeout=CONNECT_TIMEOUT)
+            conn = await asyncio.wait_for(
+                self._pool.get(),
+                timeout=CONNECT_TIMEOUT,
+            )
             return conn
-        except queue.Empty:
+        except asyncio.TimeoutError:
             if self._closed:
                 raise RuntimeError("连接池已关闭，无法获取连接")
             raise RuntimeError("获取数据库连接超时")
 
-    def _release(self, conn: sqlite3.Connection):
+    async def _release(self, conn: aiosqlite.Connection):
         if self._closed:
-            conn.close()
+            await conn.close()
             return
         try:
             self._pool.put_nowait(conn)
-        except queue.Full:
-            conn.close()
+        except asyncio.QueueFull:
+            await conn.close()
 
-    @contextmanager
-    def get_conn(self):
+    @asynccontextmanager
+    async def get_conn(self):
         """强制事务上下文，自动 BEGIN/COMMIT/ROLLBACK"""
-        conn = self._acquire()
-        conn.execute("BEGIN")
+        conn = await self._acquire()
+        await conn.execute("BEGIN")
         try:
             yield conn
-            conn.commit()
+            await conn.commit()
         except Exception as e:
-            conn.rollback()
+            await conn.rollback()
             logger.error(f"操作数据库异常：{e}")
         finally:
-            self._release(conn)
+            await self._release(conn)
 
-    def close_all(self):
+    async def close_all(self):
         self._closed = True
-        # 等待所有连接放回池子并释放
-        with self._lock:
+        async with self._lock:
             while self._created > 0:
-                conn = self._pool.get()
-                conn.close()
+                conn = await self._pool.get()
+                await conn.close()
                 self._created -= 1
 
 
-db_pool = SqlitePool()
+db_pool = AsyncSqlitePool()
