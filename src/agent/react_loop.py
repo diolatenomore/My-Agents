@@ -138,18 +138,26 @@ async def run_agent_stream(
                     yield {"type": "token", "content": chunk.content}
 
             # astream 结束后，aggregated 包含完整响应
-            messages.append(aggregated)
+            # 注意：aggregated 是 AIMessageChunk，需转为 AIMessage 确保 tool_calls 正确序列化
+            msg = AIMessage(
+                content=full_content,
+                tool_calls=list(aggregated.tool_calls) if aggregated.tool_calls else [],
+            )
+            messages.append(msg)
 
             # 没有工具调用 → 模型完成
-            if not aggregated.tool_calls:
+            if not msg.tool_calls:
                 yield {"type": "done", "content": full_content, "_messages": messages}
                 return
 
             # 执行工具调用
-            for tool_call in aggregated.tool_calls:
+            for tool_call in msg.tool_calls:
                 tool_name = tool_call.get("name") if isinstance(tool_call, dict) else tool_call.name
                 tool_args = tool_call.get("args") if isinstance(tool_call, dict) else tool_call.args
                 tool_call_id = tool_call.get("id") if isinstance(tool_call, dict) else tool_call.id
+                # 安全兜底：如果流式返回缺少 id，生成一个
+                if not tool_call_id:
+                    tool_call_id = f"call_{tool_name}"
 
                 yield {"type": "tool_call", "name": tool_name, "args": tool_args}
 

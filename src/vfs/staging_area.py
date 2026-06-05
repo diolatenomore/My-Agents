@@ -20,58 +20,56 @@ class StagingRecord:
     # 所以删除文件把deleted设置为True，表示文件已被删除，就再不会到文件系统中判断命名冲突。
 
 class StagingArea:
-    """控制暂存区路径的分发"""
-    task_id: Optional[str] = None  #  任务id
-    mapping: dict[str, str] = {}  # 所有文件/目录路径到暂存区路径的映射
-    deleted_mapping: dict[str, bool] = {}  # 标记文件是否在暂存区被删除
-    deleted_dir_mapping: dict[str, bool] = {}  # 标记目录是否在暂存区被删除
+    """控制暂存区路径的分发（实例化，每个 task 独立一份）"""
 
-    @classmethod
-    def get_staging_path(cls, path: str) -> str | None:
+    def __init__(self, task_id: str):
+        self.task_id: str = task_id
+        self.mapping: dict[str, str] = {}  # 所有文件/目录路径到暂存区路径的映射
+        self.deleted_mapping: dict[str, bool] = {}  # 标记文件是否在暂存区被删除
+        self.deleted_dir_mapping: dict[str, bool] = {}  # 标记目录是否在暂存区被删除
+
+    def get_staging_path(self, path: str) -> str | None:
         """获取暂存区路径，如果已被删除或不存在则返回 None"""
-        if not cls.deleted_mapping.get(path, False) and path in cls.mapping:
+        if not self.deleted_mapping.get(path, False) and path in self.mapping:
             # 遍历deleted_dir_mapping，检查path是否在已删除的目录下
-            for dir_path, is_deleted in cls.deleted_dir_mapping.items():
+            for dir_path, is_deleted in self.deleted_dir_mapping.items():
                 if is_deleted and path.startswith(dir_path + "/"):
                     # 如果path在已删除的目录下，将deleted_mapping对应值设为True
-                    cls.deleted_mapping[path] = True
+                    self.deleted_mapping[path] = True
                     return None
             # 正常返回暂存区路径
-            return cls.mapping[path]
+            return self.mapping[path]
         return None
 
-    @classmethod
-    def get_staging_dir_path(cls, path: str) -> str | None:
+    def get_staging_dir_path(self, path: str) -> str | None:
         """
         获取暂存区目录路径，如果已被删除或不存在则返回None
         """
-        if not cls.deleted_dir_mapping.get(path, False) and path in cls.mapping:
+        if not self.deleted_dir_mapping.get(path, False) and path in self.mapping:
             # 如果path是目录，就返回目录路径
-            return cls.mapping[path]
+            return self.mapping[path]
         return None
 
-    @classmethod
-    async def register(cls, path: str) -> str:
+    async def register(self, path: str) -> str:
         """
         分配一条暂存区路径
         """
-        # TODO 暂存区具体路径待定
-        # 将path转换为哈希值并保留扩展名，作为暂存区路径的文件名，避免因为path中包含“/”而导致创建目录
+        # 将path转换为哈希值并保留扩展名，作为暂存区路径的文件名，避免因为path中包含"/"而导致创建目录
         path_hash = hashlib.md5(path.encode()).hexdigest()
         _, ext = os.path.splitext(path)
-        staging_path = f"{STAGING_AREA_PATH}/{cls.task_id}/{path_hash}{ext}"
+        staging_path = f"{STAGING_AREA_PATH}/{self.task_id}/{path_hash}{ext}"
 
         # 更新缓存
-        cls.mapping[path] = staging_path
+        self.mapping[path] = staging_path
         # 更新删除状态缓存
-        cls.deleted_mapping[path] = False
+        self.deleted_mapping[path] = False
 
         # 写入数据库
         try:
             async with db_pool.get_conn() as conn:
                 cursor = await conn.execute(
                     "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
-                    (cls.task_id, path),
+                    (self.task_id, path),
                 )
                 existing = await cursor.fetchone()
                 if existing:
@@ -84,30 +82,29 @@ class StagingArea:
                     # 插入新记录
                     await conn.execute(
                         "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
-                        (cls.task_id, path, staging_path, False, False),
+                        (self.task_id, path, staging_path, False, False),
                     )
         except Exception as e:
-            logger.error(f"写入暂存区记录失败: {e}")  # TODO 会不会rollback？
+            logger.error(f"写入暂存区记录失败: {e}")
 
         logger.debug(f"为文件{path}分配暂存区路径: {staging_path}")
         return staging_path
 
-    @classmethod
-    async def register_dir(cls, path: str) -> str:
+    async def register_dir(self, path: str) -> str:
         """
         分配一条目录暂存区路径
         """
         staging_path = " "  # 不实际创建目录，作为占位符
 
-        cls.mapping[path] = staging_path
-        cls.deleted_dir_mapping[path] = False
+        self.mapping[path] = staging_path
+        self.deleted_dir_mapping[path] = False
 
         # 写入数据库
         try:
             async with db_pool.get_conn() as conn:
                 cursor = await conn.execute(
                     "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
-                    (cls.task_id, path),
+                    (self.task_id, path),
                 )
                 existing = await cursor.fetchone()
                 if existing:
@@ -118,7 +115,7 @@ class StagingArea:
                 else:
                     await conn.execute(
                         "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
-                        (cls.task_id, path, staging_path, True, False),
+                        (self.task_id, path, staging_path, True, False),
                     )
         except Exception as e:
             logger.error(f"写入暂存区目录记录失败: {e}")
@@ -126,19 +123,18 @@ class StagingArea:
         logger.debug(f"为目录{path}分配暂存区路径: {staging_path}")
         return staging_path
 
-    @classmethod
-    async def delete(cls, path: str) -> None:
+    async def delete(self, path: str) -> None:
         """
         删除暂存区路径（设置deleted为True）
         """
-        cls.deleted_mapping[path] = True
+        self.deleted_mapping[path] = True
 
         # 更新数据库
         try:
             async with db_pool.get_conn() as conn:
                 cursor = await conn.execute(
                     "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
-                    (cls.task_id, path),
+                    (self.task_id, path),
                 )
                 existing = await cursor.fetchone()
                 if existing:
@@ -149,36 +145,34 @@ class StagingArea:
                 else:
                     await conn.execute(
                         "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
-                        (cls.task_id, path, None, False, True),
+                        (self.task_id, path, None, False, True),
                     )
         except Exception as e:
             logger.error(f"更新暂存区删除状态失败: {e}")
 
         logger.debug(f"在暂存区删除文件{path}")
 
-    @classmethod
-    def is_deleted(cls, path: str) -> bool:
+    def is_deleted(self, path: str) -> bool:
         """判断path是否在暂存区内删除（真实路径可能还存在）"""
-        return cls.deleted_mapping.get(path, False)
+        return self.deleted_mapping.get(path, False)
 
-    @classmethod
-    async def delete_dir(cls, path: str):
+    async def delete_dir(self, path: str):
         """
         删除目录暂存区路径（设置deleted为True）
         """
         # 如果path在暂存区中，就删除暂存区中的目录
-        staging_path = cls.get_staging_dir_path(path)
+        staging_path = self.get_staging_dir_path(path)
         if staging_path:
-            cls.mapping.pop(path, None)
+            self.mapping.pop(path, None)
 
         # 更新缓存中的删除状态
-        cls.deleted_dir_mapping[path] = True
+        self.deleted_dir_mapping[path] = True
 
         # 遍历deleted_dir_mapping，更新子目录的删除状态
-        for dir_path in list(cls.deleted_dir_mapping.keys()):
+        for dir_path in list(self.deleted_dir_mapping.keys()):
             if dir_path.startswith(path + "/"):
-                cls.mapping.pop(dir_path, None)  # 不存在也不报错
-                cls.deleted_dir_mapping[dir_path] = True
+                self.mapping.pop(dir_path, None)  # 不存在也不报错
+                self.deleted_dir_mapping[dir_path] = True
 
         try:
             async with db_pool.get_conn() as conn:
@@ -186,7 +180,7 @@ class StagingArea:
                 # 检查是否已存在记录
                 cursor = await conn.execute(
                     "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
-                    (cls.task_id, path),
+                    (self.task_id, path),
                 )
                 existing = await cursor.fetchone()
                 if existing:
@@ -197,13 +191,13 @@ class StagingArea:
                 else:
                     await conn.execute(
                         "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
-                        (cls.task_id, path, None, True, True),
+                        (self.task_id, path, None, True, True),
                     )
 
                 # 处理子目录
                 cursor = await conn.execute(
                     "SELECT id FROM staging_records WHERE task_id = ? AND path LIKE ? AND is_dir = 1",
-                    (cls.task_id, path + "/%"),
+                    (self.task_id, path + "/%"),
                 )
                 for row in await cursor.fetchall():
                     await conn.execute(
@@ -215,24 +209,22 @@ class StagingArea:
 
         logger.debug(f"在暂存区删除目录{path}")
 
-    @classmethod
-    def is_deleted_dir(cls, path: str) -> bool:
+    def is_deleted_dir(self, path: str) -> bool:
         """判断path是否在暂存区内删除（真实路径可能还存在）"""
-        return cls.deleted_dir_mapping.get(path, False)
+        return self.deleted_dir_mapping.get(path, False)
 
-    @classmethod
-    async def rename(cls, old_path: str, new_path: str) -> None:
+    async def rename(self, old_path: str, new_path: str) -> None:
         """
         重命名暂存区路径
         """
         # 更新缓存中的路径映射关系
-        cls.mapping[new_path] = cls.mapping[old_path]
-        cls.mapping.pop(old_path, None)
+        self.mapping[new_path] = self.mapping[old_path]
+        self.mapping.pop(old_path, None)
 
         # 更新删除状态缓存
-        cls.deleted_mapping[new_path] = cls.deleted_mapping[old_path]
+        self.deleted_mapping[new_path] = self.deleted_mapping[old_path]
         # 标记原路径为已删除
-        cls.deleted_mapping[old_path] = True
+        self.deleted_mapping[old_path] = True
 
         # 更新数据库
         try:
@@ -240,7 +232,7 @@ class StagingArea:
                 # 检查旧路径是否存在
                 cursor = await conn.execute(
                     "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
-                    (cls.task_id, old_path),
+                    (self.task_id, old_path),
                 )
                 existing = await cursor.fetchone()
                 if existing:
@@ -253,49 +245,48 @@ class StagingArea:
                     # 插入旧路径删除记录
                     await conn.execute(
                         "INSERT INTO staging_records (task_id, path, is_dir, deleted) VALUES (?, ?, ?, ?)",
-                        (cls.task_id, old_path, False, True),
+                        (self.task_id, old_path, False, True),
                     )
 
                 # 插入新路径记录
                 await conn.execute(
                     "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
-                    (cls.task_id, new_path, cls.mapping[new_path], False, False),
+                    (self.task_id, new_path, self.mapping[new_path], False, False),
                 )
         except Exception as e:
             logger.error(f"更新暂存区重命名状态失败: {e}")
 
         logger.debug(f"在暂存区重命名文件{old_path}为{new_path}")
 
-    @classmethod
-    async def rename_dir(cls, old_dir_path: str, new_dir_path: str) -> None:
+    async def rename_dir(self, old_dir_path: str, new_dir_path: str) -> None:
         """
         重命名目录暂存区路径
         """
         # 1、更新目录缓存
         # 更新缓存中的路径映射关系
-        cls.mapping[new_dir_path] = cls.mapping[old_dir_path]
-        cls.mapping.pop(old_dir_path, None)
+        self.mapping[new_dir_path] = self.mapping[old_dir_path]
+        self.mapping.pop(old_dir_path, None)
         # 更新删除状态缓存
-        cls.deleted_dir_mapping[new_dir_path] = cls.deleted_dir_mapping[old_dir_path]
+        self.deleted_dir_mapping[new_dir_path] = self.deleted_dir_mapping[old_dir_path]
         # 标记原目录被删除
-        cls.deleted_dir_mapping[old_dir_path] = True
+        self.deleted_dir_mapping[old_dir_path] = True
 
         # 2、更新子目录缓存
         # 遍历所有已注册的路径，更新子文件/子目录的路径
-        for old_path in list(cls.mapping.keys()):
+        for old_path in list(self.mapping.keys()):
             if old_path.startswith(old_dir_path + "/"):
                 # 替换前缀
                 new_sub_path = new_dir_path + old_path[len(old_dir_path):]
-                cls.mapping[new_sub_path] = cls.mapping[old_path]
-                cls.mapping.pop(old_path, None)
+                self.mapping[new_sub_path] = self.mapping[old_path]
+                self.mapping.pop(old_path, None)
 
                 # 更新删除状态映射
-                if old_path in cls.deleted_mapping:
-                    cls.deleted_mapping[new_sub_path] = cls.deleted_mapping[old_path]
-                    cls.deleted_mapping[old_path] = True
-                elif old_path in cls.deleted_dir_mapping:
-                    cls.deleted_dir_mapping[new_sub_path] = cls.deleted_dir_mapping[old_path]
-                    cls.deleted_dir_mapping[old_path] = True
+                if old_path in self.deleted_mapping:
+                    self.deleted_mapping[new_sub_path] = self.deleted_mapping[old_path]
+                    self.deleted_mapping[old_path] = True
+                elif old_path in self.deleted_dir_mapping:
+                    self.deleted_dir_mapping[new_sub_path] = self.deleted_dir_mapping[old_path]
+                    self.deleted_dir_mapping[old_path] = True
 
         # 更新数据库
         try:
@@ -304,7 +295,7 @@ class StagingArea:
                 # 检查旧目录记录是否存在
                 cursor = await conn.execute(
                     "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
-                    (cls.task_id, old_dir_path),
+                    (self.task_id, old_dir_path),
                 )
                 existing = await cursor.fetchone()
                 if existing:
@@ -315,19 +306,19 @@ class StagingArea:
                 else:
                     await conn.execute(
                         "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
-                        (cls.task_id, old_dir_path, None, True, True),
+                        (self.task_id, old_dir_path, None, True, True),
                     )
 
                 # 插入新目录记录
                 await conn.execute(
                     "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
-                    (cls.task_id, new_dir_path, cls.mapping[new_dir_path], True, False),
+                    (self.task_id, new_dir_path, self.mapping[new_dir_path], True, False),
                 )
 
                 # 处理子目录和文件
                 cursor = await conn.execute(
                     "SELECT id, path, staging_path, is_dir FROM staging_records WHERE task_id = ? AND path LIKE ? AND is_dir = 1",
-                    (cls.task_id, old_dir_path + "/%"),
+                    (self.task_id, old_dir_path + "/%"),
                 )
                 for row in await cursor.fetchall():
                     old_sub_path = row["path"]
@@ -340,33 +331,21 @@ class StagingArea:
                     # 插入新路径记录
                     await conn.execute(
                         "INSERT INTO staging_records (task_id, path, staging_path, is_dir, deleted) VALUES (?, ?, ?, ?, ?)",
-                        (cls.task_id, new_sub_path, row["staging_path"], row["is_dir"], False),
+                        (self.task_id, new_sub_path, row["staging_path"], row["is_dir"], False),
                     )
         except Exception as e:
             logger.error(f"更新暂存区目录重命名状态失败: {e}")
 
         logger.debug(f"在暂存区重命名目录{old_dir_path}为{new_dir_path}")
 
-    @classmethod
-    async def load(cls, task_id: str):
-        """
-        从数据库加载暂存区
-
-        Args:
-            task_id: 任务 ID
-        """
-        # 检查当前是否有其他文件整理任务正在进行
-        if cls.task_id is not None:
-            raise ValueError(f"当前正在处理任务 ID {cls.task_id}")
-
-        cls.task_id = task_id
-
+    async def load(self):
+        """从数据库加载暂存区"""
         # 从数据库加载记录
         try:
             async with db_pool.get_conn() as conn:
                 cursor = await conn.execute(
                     "SELECT path, staging_path, is_dir, deleted FROM staging_records WHERE task_id = ?",
-                    (task_id,),
+                    (self.task_id,),
                 )
                 for row in await cursor.fetchall():
                     path = row["path"]
@@ -376,23 +355,21 @@ class StagingArea:
 
                     # 更新映射缓存
                     if staging_path is not None:
-                        cls.mapping[path] = staging_path
+                        self.mapping[path] = staging_path
 
                     # 更新删除状态缓存
                     if is_dir:
-                        cls.deleted_dir_mapping[path] = deleted
+                        self.deleted_dir_mapping[path] = deleted
                     else:
-                        cls.deleted_mapping[path] = deleted
+                        self.deleted_mapping[path] = deleted
         except Exception as e:
             logger.error(f"加载暂存区记录失败: {e}")
 
-        logger.info(f"加载StagingArea记录成功，任务 ID: {task_id}")
+        logger.info(f"加载StagingArea记录成功，任务 ID: {self.task_id}")
 
-    @classmethod
-    def clear(cls):
+    def clear(self):
         """清空缓存"""
-        cls.task_id = None
-        cls.mapping.clear()
-        cls.deleted_mapping.clear()
-        cls.deleted_dir_mapping.clear()
-        logger.info("StagingArea清空成功")
+        self.mapping.clear()
+        self.deleted_mapping.clear()
+        self.deleted_dir_mapping.clear()
+        logger.info(f"StagingArea清空成功, task_id={self.task_id}")
