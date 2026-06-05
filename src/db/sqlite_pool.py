@@ -7,7 +7,7 @@ import sqlite3
 import aiosqlite
 from contextlib import asynccontextmanager
 
-from src.config import DB_PATH, MAX_CONNECTIONS, CONNECT_TIMEOUT
+from src.config import DB_PATH, MAX_CONNECTIONS, CONNECT_TIMEOUT, CLOSE_TIMEOUT
 from src.utils.common import logger
 
 
@@ -85,7 +85,7 @@ class AsyncSqlitePool:
         self._closed = True
         async with self._lock:
             import time
-            deadline = time.monotonic() + self._close_timeout
+            deadline = time.monotonic() + CLOSE_TIMEOUT
             while self._created > 0:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
