@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from src.config import MAX_WORKERS, CHECKPOINT_DB_PATH
 from src.models.task import Task, TaskStatus, Priority
 from src.scheduler.worker import BaseWorker, AsyncBaseWorker
-from src.repositories.task_repository import TaskRepository
+from src.scheduler.task_repository import TaskRepository
 from src.utils.common import logger
 
 
