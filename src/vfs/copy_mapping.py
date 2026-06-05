@@ -177,7 +177,11 @@ class CopyMapping:
         """
         判断target_path是否需要拷贝，如果是，拷贝并修改标记。
         """
-        # TODO 改为从缓存中查询，或者根据staging_path是否真正存在来判断
+        # 如果暂存区路径在文件系统中实际已存在
+        target_staging_path = StagingArea.get_staging_path(target_path)
+        if os.path.exists(target_staging_path):
+            return
+
         # 判断是否为精确拷贝（target_path作为copy_file操作的目标路径）
         record = cls.get_from_db(task_id=cls.task_id, target_path=target_path)
         # 不为None，说明是精确拷贝
@@ -190,7 +194,7 @@ class CopyMapping:
             staging_path_source = StagingArea.mapping.get(record[0].source_path)  # 直接获取路径，不判断是否被删除
             path = staging_path_source if staging_path_source else record[0].source_path
             
-            copy(path, StagingArea.get_staging_path(target_path))
+            copy(path, target_staging_path)
             logger.info(f"拷贝文件{record[0].source_path}到{target_path}")
             
             # 标记source_path已被拷贝一次
@@ -202,7 +206,7 @@ class CopyMapping:
                     # 更新数据库，标记该条记录已完成复制
                     await conn.execute(
                         "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (records[0].id,),
+                        (record[0].id,),
                     )
             except Exception as e:
                 logger.error(f"标记复制完成失败: {e}")
@@ -218,7 +222,6 @@ class CopyMapping:
                     if source_path in cls.dir_copy_done.get(dir_source_path, []):
                         break
 
-                    target_staging_path = StagingArea.get_staging_path(target_path)
                     if not os.path.exists(target_staging_path):    
                         # 如果原文件有暂存区路径则使用
                         staging_path_source = StagingArea.mapping.get(source_path)  # 直接获取路径，不判断是否被删除
