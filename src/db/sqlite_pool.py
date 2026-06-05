@@ -55,7 +55,7 @@ class AsyncSqlitePool:
         except asyncio.TimeoutError:
             if self._closed:
                 raise RuntimeError("连接池已关闭，无法获取连接")
-            raise RuntimeError("获取数据库连接超时")
+            return await self._create_connection()  # 超时后创建新连接
 
     async def _release(self, conn: aiosqlite.Connection):
         if self._closed:
@@ -77,14 +77,24 @@ class AsyncSqlitePool:
         except Exception as e:
             await conn.rollback()
             logger.error(f"操作数据库异常：{e}")
+            raise e  # 传递异常给调用者
         finally:
             await self._release(conn)
 
     async def close_all(self):
         self._closed = True
         async with self._lock:
+            import time
+            deadline = time.monotonic() + self._close_timeout
             while self._created > 0:
-                conn = await self._pool.get()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(f"SqlitePool.close timed out waiting for {self._created} connection(s) to be released")
+                    break
+                try:
+                    conn = await asyncio.wait_for(self._pool.get(), timeout=remaining)
+                except (asyncio.TimeoutError, asyncio.QueueEmpty):
+                    break
                 await conn.close()
                 self._created -= 1
 
