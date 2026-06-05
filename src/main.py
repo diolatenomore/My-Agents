@@ -4,7 +4,8 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Path, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from src.db.sqlite_pool import db_pool
 from src.db.init_db import init_db
@@ -55,6 +56,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get('/')
+async def index():
+    """提供测试页面"""
+    html_path = './test_chat.html'
+    with open(html_path, 'r', encoding='utf-8') as f:
+        return HTMLResponse(f.read())
+
+
 @app.post('/api/chat', response_model=ChatResponse)
 async def chat(chat_request: ChatRequest, request: Request):
     query = chat_request.query
@@ -77,12 +95,14 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
     session_id = chat_request.session_id or str(uuid.uuid4())
 
     async with session_manager.lock(session_id):
-        from src.vfs.task_context import set_current_task_id, clean_current_task_id
+        from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
         set_current_task_id(session_id)
+        await init_vfs(session_id)
         try:
             history = await session_manager.load_history(session_id)
             result = await run_agent(query, history=history)
         finally:
+            await clean_vfs()
             clean_current_task_id()
 
         await session_manager.save_messages(session_id, result.messages)
@@ -117,8 +137,9 @@ async def chat_stream(chat_request: ChatRequest):
 
 async def _stream_events(query: str, session_id: str, session_manager: SessionManager):
     """生成 SSE 事件流"""
-    from src.vfs.task_context import set_current_task_id, clean_current_task_id
+    from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
     set_current_task_id(session_id)
+    await init_vfs(session_id)
     history = await session_manager.load_history(session_id)
 
     # 提前通知前端 session_id
@@ -138,6 +159,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         logger.error(f"流式输出出错: {e}")
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
     finally:
+        await clean_vfs()
         clean_current_task_id()
         if messages:
             try:
