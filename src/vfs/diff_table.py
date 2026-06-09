@@ -93,6 +93,28 @@ class DiffTable:
     async def operate(record: DiffRecord):
         try:
             async with db_pool.get_conn() as conn:
+                if record.operation_type in (OperationType.RENAME_FILE, OperationType.RENAME_DIR):
+                    # 检查是否已有链式重命名记录：若已有 a->b，本次为 b->c，则更新为 a->c
+                    cursor = await conn.execute('''
+                    SELECT id, created_at FROM diff_records
+                    WHERE task_id = ? AND operation_type = ? AND target_path = ? AND is_reviewed = 0
+                    LIMIT 1
+                    ''', (record.task_id, record.operation_type.value, record.source_path))
+                    row = await cursor.fetchone()
+                    if row:
+                        rename_id = row['id']
+                        rename_created_at = row['created_at']
+                        # 更新 rename 记录：a->b 变为 a->c
+                        await conn.execute('''
+                        UPDATE diff_records SET target_path = ? WHERE id = ?
+                        ''', (record.target_path, rename_id))
+                        # 将 rename 之后引用 b 作为 source_path 的记录同步改为 c
+                        await conn.execute('''
+                        UPDATE diff_records SET source_path = ?
+                        WHERE task_id = ? AND is_reviewed = 0 AND source_path = ? AND created_at > ?
+                        ''', (record.target_path, record.task_id, record.source_path, rename_created_at))
+                        return
+
                 await conn.execute('''
                 INSERT INTO diff_records (task_id, operation_type, source_path, target_path, step, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -144,7 +166,7 @@ class DiffTable:
                 cursor = await conn.execute('''
                 SELECT id, task_id, operation_type, source_path, target_path, step, created_at
                 FROM diff_records
-                WHERE task_id = ?
+                WHERE task_id = ? AND is_reviewed = 0
                 ORDER BY created_at ASC
                 ''', (task_id,))
 
@@ -162,6 +184,33 @@ class DiffTable:
             logger.error(f"导出操作记录失败: {e}")
 
         return records
+
+    @staticmethod
+    async def has_unreviewed(task_id: str) -> bool:
+        """检查是否有未审批的操作记录"""
+        try:
+            async with db_pool.get_conn() as conn:
+                cursor = await conn.execute(
+                    "SELECT COUNT(*) as cnt FROM diff_records WHERE task_id = ? AND is_reviewed = 0",
+                    (task_id,),
+                )
+                row = await cursor.fetchone()
+                return row['cnt'] > 0
+        except Exception as e:
+            logger.error(f"检查未审批记录失败: {e}")
+            return False
+
+    @staticmethod
+    async def mark_reviewed(task_id: str):
+        """将 task 的所有未审批记录标记为已审批"""
+        try:
+            async with db_pool.get_conn() as conn:
+                await conn.execute(
+                    "UPDATE diff_records SET is_reviewed = 1 WHERE task_id = ? AND is_reviewed = 0",
+                    (task_id,),
+                )
+        except Exception as e:
+            logger.error(f"标记已审批失败: {e}")
 
     @staticmethod
     def merge(records: List[DiffRecord]) -> OperationTree | None:

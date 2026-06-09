@@ -17,14 +17,6 @@ from src.models.http_dtos import (
 )
 from src.tools.loader import discover_tools
 from src.agent.react_loop import run_agent, run_agent_stream
-from src.session.manager import SessionManager
-
-# 配置开关：USE_LEGACY_AGENT=true 则走旧的 Classifier+Workflow 模式
-USE_LEGACY_AGENT = os.getenv("USE_LEGACY_AGENT", "false").lower() == "true"
-
-# TODO chat后续带上session_id
-# TODO skill里的tool名字不一致的修补
-# TODO vfs改为通用工具，并接受不同task_id
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,19 +30,9 @@ async def lifespan(app: FastAPI):
     from src.session.manager import SessionManager
     app.state.session_manager = SessionManager()
 
-    if USE_LEGACY_AGENT:
-        # 旧架构：懒导入避免 import 链触发
-        from src.scheduler.task_manager import TaskManager
-        task_manager = TaskManager()
-        task_manager.run()
-        app.state.task_manager = task_manager
-
     try:
         yield
     finally:
-        if USE_LEGACY_AGENT:
-            task_manager = app.state.task_manager
-            task_manager.close()
         await db_pool.close_all()
 
 
@@ -80,10 +62,7 @@ async def chat(chat_request: ChatRequest, request: Request):
         return ChatResponse(code=401, message="参数不能为空", type="error")
 
     try:
-        if USE_LEGACY_AGENT:
-            return await _legacy_chat(query, request)
-        else:
-            return await _new_chat(chat_request, request.app.state.session_manager)
+        return await _new_chat(chat_request, request.app.state.session_manager)
     except Exception as e:
         logger.error(e)
         return ChatResponse(code=500, message="服务端出错", type="error")
@@ -94,13 +73,22 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
     query = chat_request.query
     session_id = chat_request.session_id or str(uuid.uuid4())
 
+    review_tree = None
+
     async with session_manager.lock(session_id):
         from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
+        from src.vfs.review_manager import ReviewManager
         set_current_task_id(session_id)
         await init_vfs(session_id)
         try:
             history = await session_manager.load_history(session_id)
             result = await run_agent(query, history=history)
+
+            # 如果有文件修改，处理 merge 结果，写入数据库
+            from src.vfs.diff_table import DiffTable
+            if await DiffTable.has_unreviewed(session_id):
+                review_tree = await ReviewManager.build_review_tree(session_id)
+
         finally:
             await clean_vfs()
             clean_current_task_id()
@@ -112,6 +100,7 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
         message=result.content,
         type="chat",
         session_id=session_id,
+        review_tree=review_tree,
     )
 
 
@@ -154,7 +143,15 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
             ):
                 if event["type"] == "done":
                     messages = event.pop("_messages", [])
+                    # 在 done 事件中嵌入审批树
+                    from src.vfs.diff_table import DiffTable
+                    from src.vfs.review_manager import ReviewManager
+                    if await DiffTable.has_unreviewed(session_id):
+                        review_tree = await ReviewManager.build_review_tree(session_id)
+                        if review_tree:
+                            event["review_tree"] = review_tree
                 yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+
     except Exception as e:
         logger.error(f"流式输出出错: {e}")
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
@@ -168,75 +165,49 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                 logger.error(f"保存会话消息失败: {e}")
 
 
-async def _legacy_chat(query: str, request: Request) -> ChatResponse:
-    """旧架构：Classifier 分发 + 工作流"""
-    from src.scheduler.classifier import Classifier
-    from src.models.task import Task, TaskType, Priority, TaskStatus
-    from langchain_openai import ChatOpenAI
-    from src.config import MODEL, DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
-    from src.utils.common import extract_content
-    import uuid
+# ---- VFS 审批接口 ----
 
-    decision = await Classifier.classify(query)
+@app.get('/api/vfs/review/{task_id}')
+async def get_review_tree(task_id: str = Path(...)):
+    """获取 merge 后的审批树"""
+    from src.vfs.review_manager import ReviewManager
+    tree = await ReviewManager.get_review_tree(task_id)
+    if tree is None:
+        return JSONResponse({"code": 200, "message": "无待审批变更", "review_tree": None})
+    return JSONResponse({"code": 200, "message": "ok", "review_tree": tree})
 
-    if decision == TaskType.CHAT:
-        model = ChatOpenAI(model=MODEL, base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
-        messages = [{"role": "user", "content": query}]
-        response = model.invoke(messages)
-        return ChatResponse(
-            code=200,
-            message=extract_content(response),
-            type="chat"
-        )
-    else:
-        task_id = str(uuid.uuid4())
-        task = Task(
-            task_id=task_id,
-            query=query,
-            task_type=decision,
-            status=TaskStatus.PENDING,
-            priority=Priority.P2
-        )
-        request.app.state.task_manager.enqueue(task)
-        return ChatResponse(
-            code=200,
-            message=f"任务已创建, task_id:{task_id}",
-            type="mission-" + decision.value
-        )
 
-# 暂时不用
-# @app.post('/api/tasks', status_code=201)
-# async def create_task(task_data):
-#     """创建新任务"""
-#     try:
-#         priority = task_data.priority
-#         task_type = task_data.type
-#         config = task_data.config
-#
-#         # 转换任务类型
-#         execution_type = ExecutionType.THREAD if task_type == 'thread' else ExecutionType.COROUTINE
-#
-#         # 后端生成task_id
-#         task_id = str(uuid.uuid4())
-#
-#         # 创建任务
-#         task = Task(
-#             task_id=task_id,
-#             priority=priority,
-#             config=config,
-#             type=execution_type
-#         )
-#
-#         # 提交任务
-#         task_manager.enqueue(task)
-#
-#         return {
-#             'task_id': task_id,
-#             'message': f'任务 {task_id} 已提交'
-#         }
-#     except Exception as e:
-#         raise HTTPException(status_code=400, detail=f'创建任务失败: {str(e)}')
+@app.post('/api/vfs/review/{task_id}')
+async def process_review(task_id: str = Path(...), approved: bool = True):
+    """处理审批结果（通过/拒绝）"""
+    from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
+    set_current_task_id(task_id)
+    await init_vfs(task_id)
+    try:
+        from src.vfs.review_manager import ReviewManager
+        await ReviewManager.process_review(task_id, approved)
+    finally:
+        await clean_vfs()
+        clean_current_task_id()
+    return JSONResponse({"code": 200, "message": "审批完成"})
 
+
+@app.post('/api/vfs/review/{task_id}/item/{item_id}')
+async def process_review_item(task_id: str = Path(...), item_id: str = Path(...), approved: bool = True):
+    """审批单条操作（通过/拒绝）"""
+    from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
+    from src.vfs.review_manager import ReviewManager
+    set_current_task_id(task_id)
+    await init_vfs(task_id)
+    try:
+        await ReviewManager.process_single_item(task_id, item_id, approved)
+    finally:
+        await clean_vfs()
+        clean_current_task_id()
+    return JSONResponse({"code": 200, "message": "ok"})
+
+
+# ---- 旧版任务 API（保留向后兼容） ----
 
 @app.get('/api/tasks/{task_id}', response_model=GetTaskStatusResponse)
 async def get_task_status(request: Request, task_id: str = Path(...)):

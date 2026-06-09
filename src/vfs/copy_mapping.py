@@ -28,11 +28,15 @@ class CopyMapping:
         self.copied_num: Dict[str, int] = {}  # 记录某个文件作为source_path已被拷贝的次数
         self.dir_mapping: Dict[str, str] = {}  # 记录从source_path到target_path的目录映射关系
         self.dir_copy_done: Dict[str, List[str]] = {}  # 记录某个目录已被拷贝的子文件路径
+        # 反向映射（target → source），用于审批阶段反查 copy/move 来源
+        self.file_reverse: Dict[str, str] = {}  # target_path -> source_path
+        self.dir_reverse: Dict[str, str] = {}  # target_dir -> source_dir
 
     async def register(self, source_path: str, target_path: str):
         """注册复制记录"""
         # 更新缓存
         self.registered_num[source_path] = self.registered_num.get(source_path, 0) + 1
+        self.file_reverse[target_path] = source_path
 
         # 写入到数据库
         try:
@@ -48,6 +52,7 @@ class CopyMapping:
     async def register_dir(self, source_path: str, target_path: str):
         """注册目录映射"""
         self.dir_mapping[source_path] = target_path
+        self.dir_reverse[target_path] = source_path
 
         # 写入到数据库
         try:
@@ -179,30 +184,29 @@ class CopyMapping:
             return
 
         # 判断是否为精确拷贝（target_path作为copy_file操作的目标路径）
-        record = await self.get_from_db(task_id=self.task_id, target_path=target_path)
-        # 不为None，说明是精确拷贝
-        if record:
+        source_path = self.file_reverse.get(target_path)
+        if source_path is not None:
             # 已拷贝，跳过
-            if record[0].is_copied:
+            if self.copied_num.get(source_path, 0) >= self.registered_num.get(source_path, 0):
                 return
 
             # 如果原文件有暂存区路径则使用
-            staging_path_source = self._staging_area.mapping.get(record[0].source_path)  # 直接获取路径，不判断是否被删除
-            path = staging_path_source if staging_path_source else record[0].source_path
+            staging_path_source = self._staging_area.mapping.get(source_path)  # 直接获取路径，不判断是否被删除
+            path = staging_path_source if staging_path_source else source_path
 
             copy(path, target_staging_path)
-            logger.info(f"拷贝文件{record[0].source_path}到{target_path}")
+            logger.info(f"拷贝文件{source_path}到{target_path}")
 
             # 标记source_path已被拷贝一次
-            self.copied_num[record[0].source_path] = self.copied_num.get(record[0].source_path, 0) + 1
+            self.copied_num[source_path] = self.copied_num.get(source_path, 0) + 1
 
             # 更新数据库中的字段
             try:
                 async with db_pool.get_conn() as conn:
                     # 更新数据库，标记该条记录已完成复制
                     await conn.execute(
-                        "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                        (record[0].id,),
+                        "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ? AND is_copied = 0",
+                        (self.task_id, target_path),
                     )
             except Exception as e:
                 logger.error(f"标记复制完成失败: {e}")
@@ -239,6 +243,10 @@ class CopyMapping:
             self.copied_num.pop(old_path, None)
             self.registered_num.pop(old_path, None)
 
+        # 如果old_path作为target_path，则更新缓存
+        if old_path in self.file_reverse:
+            self.file_reverse[new_path] = self.file_reverse.pop(old_path)
+
         # 更新数据库，把old_path（source_path/target_path）替换为new_path
         try:
             async with db_pool.get_conn() as conn:
@@ -271,6 +279,24 @@ class CopyMapping:
             else:
                 new_dir_mapping[source] = target
         self.dir_mapping = new_dir_mapping
+
+        # 1b. 从 dir_mapping 重建 dir_reverse
+        self.dir_reverse = {v: k for k, v in self.dir_mapping.items()}
+
+        # 1c. 维护 file_reverse 中受目录重命名影响的 key 和 value（前缀替换）
+        for target_path in list(self.file_reverse.keys()):
+            source_path = self.file_reverse[target_path]
+            new_key = target_path
+            new_value = source_path
+            # key（target_path）以 old_dir_path 为前缀
+            if target_path.startswith(old_dir_path + "/"):
+                new_key = new_dir_path + target_path[len(old_dir_path):]
+            # value（source_path）以 old_dir_path 为前缀
+            if source_path.startswith(old_dir_path + "/"):
+                new_value = new_dir_path + source_path[len(old_dir_path):]
+            if new_key != target_path or new_value != source_path:
+                self.file_reverse.pop(target_path)
+                self.file_reverse[new_key] = new_value
 
         # 2. 处理 dir_copy_done
         for source, paths in list(self.dir_copy_done.items()):
@@ -396,8 +422,10 @@ class CopyMapping:
 
                     if is_dir:
                         self.dir_mapping[source_path] = target_path
+                        self.dir_reverse[target_path] = source_path
                     else:
                         self.registered_num[source_path] = self.registered_num.get(source_path, 0) + 1
+                        self.file_reverse[target_path] = source_path
                         if is_copied:
                             self.copied_num[source_path] = self.copied_num.get(source_path, 0) + 1
         except Exception as e:
@@ -405,10 +433,26 @@ class CopyMapping:
 
         logger.info(f"加载CopyMapping记录成功，任务 ID: {self.task_id}")
 
+    def get_copy_source(self, path: str) -> Optional[str]:
+        """
+        根据目标路径反查原始来源路径。
+        返回 None 表示该文件并非来自 copy/move 操作。
+        """
+        # 1. 精确文件匹配
+        if path in self.file_reverse:
+            return self.file_reverse[path]
+        # 2. 目录前缀匹配（被 copy_dir/move_dir 覆盖的子文件）
+        for target_dir, source_dir in self.dir_reverse.items():
+            if path.startswith(target_dir + "/"):
+                return source_dir + path[len(target_dir):]
+        return None
+
     def clear(self):
         """清空缓存"""
         self.registered_num.clear()
         self.copied_num.clear()
         self.dir_mapping.clear()
         self.dir_copy_done.clear()
+        self.file_reverse.clear()
+        self.dir_reverse.clear()
         logger.info(f"CopyMapping清空成功, task_id={self.task_id}")

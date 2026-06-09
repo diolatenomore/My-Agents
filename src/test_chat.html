@@ -43,6 +43,33 @@
   button.danger:hover { background: #b71c1c; }
   .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: #999; font-size: 14px; }
   pre.json { font-size: 12px; background: #f5f5f5; padding: 8px; border-radius: 4px; overflow-x: auto; max-height: 200px; }
+  .review-panel { margin: 12px 20px; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; display: none; max-height: 50vh; display: none; flex-direction: column; }
+  .review-panel.show { display: flex; }
+  .review-panel .title { padding: 10px 14px; font-size: 14px; font-weight: 600; background: #fafafa; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .review-panel .body { flex: 1; overflow-y: auto; }
+  .review-panel .title .badge { background: #1976d2; color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+  .review-panel .actions { display: flex; gap: 8px; margin-left: auto; }
+  .review-panel .actions button { padding: 4px 16px; font-size: 12px; }
+  .review-panel .actions button.approve { background: #2e7d32; }
+  .review-panel .actions button.approve:hover { background: #1b5e20; }
+  .review-panel .actions button.reject { background: #c62828; }
+  .review-panel .actions button.reject:hover { background: #b71c1c; }
+  .review-item { padding: 8px 14px; font-size: 13px; border-bottom: 1px solid #f5f5f5; display: flex; align-items: center; gap: 6px; }
+  .review-item .op-icon { width: 20px; font-size: 13px; text-align: center; }
+  .review-item .op-path { flex: 1; font-family: monospace; font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .review-item .op-copy { font-size: 11px; color: #999; margin-left: 4px; white-space: nowrap; }
+  .review-item .op-status { font-size: 11px; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+  .review-item .op-status.pending { background: #fff3e0; color: #e65100; }
+  .review-item .op-status.approved { background: #e8f5e9; color: #2e7d32; }
+  .review-item .op-status.rejected { background: #ffebee; color: #c62828; }
+  .review-item.dir { font-weight: 600; background: #fafafa; }
+  .review-item.dir .op-path { font-size: 13px; }
+  .review-item .item-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .review-item .item-actions button { padding: 2px 10px; font-size: 11px; border-radius: 4px; }
+  .review-item .item-app { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+  .review-item .item-app:hover { background: #c8e6c9; }
+  .review-item .item-rej { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+  .review-item .item-rej:hover { background: #ffcdd2; }
 </style>
 </head>
 <body>
@@ -71,6 +98,8 @@
     <textarea id="input" rows="2" placeholder="输入消息..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"></textarea>
     <button id="sendBtn" onclick="send()">发送</button>
   </div>
+
+  <div id="reviewPanel" class="review-panel"></div>
 </div>
 
 <script>
@@ -111,8 +140,10 @@ async function switchSession(sid) {
   currentSessionId = sid;
   localStorage.setItem('session_id', sid);
   sessionIdEl.textContent = sid;
+  document.getElementById('reviewPanel').classList.remove('show');
   refreshSessions();
   await loadSessionMessages(sid);
+  await loadReviewTree(sid);
 }
 
 function newSession() {
@@ -121,6 +152,7 @@ function newSession() {
   localStorage.removeItem('session_id');
   sessionIdEl.textContent = '-';
   messagesEl.innerHTML = '<div class="empty-state">发送消息开始对话</div>';
+  document.getElementById('reviewPanel').classList.remove('show');
   refreshSessions();
 }
 
@@ -253,13 +285,16 @@ async function send() {
 
           case 'done':
             label.textContent = '完成';
-            // 确保最终内容展示完整
             if (parsed.content) {
               fullContent = parsed.content;
               contentDiv.textContent = fullContent;
             }
+            // 渲染审批树
+            if (parsed.review_tree) {
+              renderReviewTree(parsed.review_tree);
+            }
             scrollBottom();
-            refreshSessions(); // 刷新会话列表，更新消息数
+            refreshSessions();
             break;
 
           case 'error':
@@ -306,6 +341,112 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+async function loadReviewTree(sid) {
+  try {
+    const res = await fetch(`/api/vfs/review/${sid}`);
+    const data = await res.json();
+    if (data.code === 200 && data.review_tree) {
+      renderReviewTree(data.review_tree);
+    }
+  } catch {
+    // 忽略错误（如无审批项时不显示面板）
+  }
+}
+
+// ============ 审批树渲染 ============
+
+const OP_ICONS = {
+  MKDIR: '📁', DELETE_DIR: '🗑', RENAME_DIR: '📁',
+  CREATE_FILE: '📄', DELETE_FILE: '🗑', MODIFY_FILE: '✏️', RENAME_FILE: '📄',
+};
+const OP_LABELS = {
+  MKDIR: '创建目录', DELETE_DIR: '删除目录', RENAME_DIR: '重命名目录',
+  CREATE_FILE: '新建文件', DELETE_FILE: '删除文件', MODIFY_FILE: '修改文件', RENAME_FILE: '重命名文件',
+};
+
+function renderReviewTree(review) {
+  const panel = document.getElementById('reviewPanel');
+  const taskId = review.task_id || currentSessionId;
+  let html = `<div class="title">
+    <span>📋 文件变更审批</span>
+    <span class="badge">${review.items.length} 项</span>
+    <div class="actions">
+      <button class="approve" onclick="processReview('${taskId}', true)">全部通过</button>
+      <button class="reject" onclick="processReview('${taskId}', false)">全部拒绝</button>
+    </div>
+  </div>
+  <div class="body">`;
+
+  for (const item of review.items) {
+    html += renderReviewItem(item, 0);
+  }
+  html += '</div>';
+  panel.innerHTML = html;
+  panel.classList.add('show');
+}
+
+function renderReviewItem(item, depth) {
+  const indent = 24 + depth * 20;
+  const isDir = ['MKDIR', 'DELETE_DIR', 'RENAME_DIR'].includes(item.op_type);
+  const cls = isDir ? 'review-item dir' : 'review-item file';
+  const targetStr = item.target ? ` → ${item.target}` : '';
+  const copyStr = item.copy_source ? ` <span class="op-copy">(来源: ${item.copy_source})</span>` : '';
+  const label = OP_LABELS[item.op_type] || item.op_type;
+  const taskId = currentSessionId;
+
+  const actionsHtml = item.status === 'pending'
+    ? `<div class="item-actions">
+        <button class="item-app" onclick="event.stopPropagation();processSingleItem('${taskId}','${item.id}',true)">✓</button>
+        <button class="item-rej" onclick="event.stopPropagation();processSingleItem('${taskId}','${item.id}',false)">✗</button>
+      </div>`
+    : '';
+
+  let html = `<div class="${cls}" style="padding-left:${indent}px" data-id="${item.id}">
+    <span class="op-icon">${OP_ICONS[item.op_type] || '?'}</span>
+    <span class="op-path">${escapeHtml(item.source)}${escapeHtml(targetStr)}${copyStr}</span>
+    <span class="op-status ${item.status}">${label}</span>
+    ${actionsHtml}
+  </div>`;
+
+  if (item.children) {
+    for (const child of item.children) {
+      html += renderReviewItem(child, depth + 1);
+    }
+  }
+  return html;
+}
+
+async function processSingleItem(taskId, itemId, approved) {
+  try {
+    const res = await fetch(`/api/vfs/review/${taskId}/item/${itemId}?approved=${approved}`, { method: 'POST' });
+    const data = await res.json();
+    if (data.code === 200) {
+      await loadReviewTree(taskId);
+    } else {
+      alert(data.message || '操作失败');
+    }
+  } catch (err) {
+    alert('网络错误: ' + err.message);
+  }
+}
+
+async function processReview(taskId, approved) {
+  const action = approved ? '通过' : '拒绝';
+  if (!confirm(`确定${action}全部变更？`)) return;
+
+  try {
+    const res = await fetch(`/api/vfs/review/${taskId}?approved=${approved}`, { method: 'POST' });
+    const data = await res.json();
+    if (data.code === 200) {
+      await loadReviewTree(taskId);
+    } else {
+      alert(data.message || '操作失败');
+    }
+  } catch (err) {
+    alert('网络错误: ' + err.message);
+  }
+}
+
 // ============ 事件绑定 ============
 
 document.getElementById('refreshSessions').addEventListener('click', refreshSessions);
@@ -319,6 +460,7 @@ refreshSessions();
 if (currentSessionId) {
   sessionIdEl.textContent = currentSessionId;
   loadSessionMessages(currentSessionId);
+  loadReviewTree(currentSessionId);
 }
 </script>
 </body>

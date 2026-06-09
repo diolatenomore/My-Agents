@@ -66,10 +66,32 @@ async def init_db():
                 source_path TEXT,
                 target_path TEXT,
                 step INTEGER NOT NULL DEFAULT 0,
+                is_reviewed INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now'))
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_diff_records_task_id ON diff_records(task_id)")
+        # 兼容旧表：如果 is_reviewed 列不存在则添加
+        try:
+            await conn.execute("ALTER TABLE diff_records ADD COLUMN is_reviewed INTEGER NOT NULL DEFAULT 0")
+        except Exception:
+            pass  # 列已存在则跳过
+
+        # VFS 审批表
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS review_items (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                parent_id TEXT,
+                op_type TEXT NOT NULL,
+                source TEXT,
+                target TEXT,
+                copy_source TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_review_items_task_id ON review_items(task_id)")
 
         # Session 管理表
         await conn.execute("""
