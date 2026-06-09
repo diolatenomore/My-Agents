@@ -54,7 +54,7 @@ def dict_to_message(d: dict) -> Optional[BaseMessage]:
     if role == "user":
         return HumanMessage(content=content)
     elif role == "assistant":
-        tool_calls = d.get("tool_calls")
+        tool_calls = d.get("tool_calls") or []
         msg = AIMessage(content=content, tool_calls=tool_calls)
         return msg
     elif role == "tool":
@@ -67,15 +67,16 @@ def dict_to_message(d: dict) -> Optional[BaseMessage]:
 def filter_history_messages(messages: list[dict]) -> list[BaseMessage]:
     """从存储的消息 dict 列表中过滤出需要在下一轮注入的历史消息
 
-    规则：只保留 user / assistant(有content) / tool 三类消息
+    规则：只保留 user / assistant / tool 三类消息。
+    注意：assistant 消息如果既无 content 也无 tool_calls 才跳过（纯空消息）。
     """
     result = []
     for d in messages:
         if d["role"] in ("user", "assistant", "tool"):
             msg = dict_to_message(d)
             if msg:
-                # 跳过空内容的 assistant 消息（仅含 tool_calls 的中间帧）
-                if isinstance(msg, AIMessage) and not msg.content:
+                # 只跳过既无内容也无工具调用的 assistant 消息
+                if isinstance(msg, AIMessage) and not msg.content and not msg.tool_calls:
                     continue
                 result.append(msg)
     return result
