@@ -4,6 +4,7 @@
 并通过注册表管理每个 task 独立的 StagingArea / CopyMapping 实例。
 """
 
+import asyncio
 import contextvars
 from dataclasses import dataclass
 from typing import Optional
@@ -20,8 +21,18 @@ _task_id_ctx: contextvars.ContextVar = contextvars.ContextVar('vfs_task_id', def
 class VFSContext:
     staging_area: 'StagingArea'    # forward ref, 实际类型在 init_vfs 时注入
     copy_mapping: 'CopyMapping'
+    ref_count: int = 0  # 引用计数，为 0 时才能清理
 
 _vfs_registry: dict[str, VFSContext] = {}
+_vfs_locks: dict[str, asyncio.Lock] = {}
+_locks_lock = asyncio.Lock()  # 仅保护 _vfs_locks dict 本身
+
+
+def _get_or_create_lock(task_id: str) -> asyncio.Lock:
+    """获取或创建 per-task_id 的锁（调用方负责互斥）"""
+    if task_id not in _vfs_locks:
+        _vfs_locks[task_id] = asyncio.Lock()
+    return _vfs_locks[task_id]
 
 
 def set_current_task_id(task_id: str):
@@ -52,20 +63,25 @@ def clean_current_task_id() -> None:
 
 # ---- VFS 实例生命周期 ----
 async def init_vfs(task_id: str):
-    """为指定 task_id 创建并加载 VFS 实例（StagingArea + CopyMapping）"""
+    """为指定 task_id 创建并加载 VFS 实例（已存在则增加引用计数）"""
 
-    if task_id in _vfs_registry:
-        logger.warning(f"task_id={task_id} 的 VFS 实例已存在，跳过重复创建")
-        return
+    async with _locks_lock:
+        lock = _get_or_create_lock(task_id)
 
-    staging = StagingArea(task_id)
-    await staging.load()
+    async with lock:
+        if task_id in _vfs_registry:
+            _vfs_registry[task_id].ref_count += 1
+            logger.debug(f"VFS 实例引用计数 +1: task_id={task_id}, ref_count={_vfs_registry[task_id].ref_count}")
+            return
 
-    copy_map = CopyMapping(task_id, staging)
-    await copy_map.load()
+        staging = StagingArea(task_id)
+        await staging.load()
 
-    _vfs_registry[task_id] = VFSContext(staging_area=staging, copy_mapping=copy_map)
-    logger.debug(f"VFS 实例已创建并加载: task_id={task_id}")
+        copy_map = CopyMapping(task_id, staging)
+        await copy_map.load()
+
+        _vfs_registry[task_id] = VFSContext(staging_area=staging, copy_mapping=copy_map, ref_count=1)
+        logger.debug(f"VFS 实例已创建并加载: task_id={task_id}, ref_count=1")
 
 
 def get_staging_area() -> StagingArea:
@@ -87,12 +103,25 @@ def get_copy_mapping() -> CopyMapping:
 
 
 async def clean_vfs():
-    """清理当前协程对应 task 的 VFS 实例"""
+    """减少当前协程对应 task 的 VFS 引用计数，降至 0 才真正清理"""
     task_id = get_current_task_id()
-    ctx = _vfs_registry.pop(task_id, None)
-    if ctx:
-        ctx.staging_area.clear()
-        ctx.copy_mapping.clear()
-        logger.debug(f"VFS 实例已清理: task_id={task_id}")
-    else:
-        logger.warning(f"task_id={task_id} 的 VFS 实例不存在，无需清理")
+
+    async with _locks_lock:
+        lock = _get_or_create_lock(task_id)
+
+    async with lock:
+        ctx = _vfs_registry.get(task_id)
+        if ctx is None:
+            logger.warning(f"task_id={task_id} 的 VFS 实例不存在，无需清理")
+            return
+
+        ctx.ref_count -= 1
+        logger.debug(f"VFS 实例引用计数 -1: task_id={task_id}, ref_count={ctx.ref_count}")
+
+        if ctx.ref_count <= 0:
+            del _vfs_registry[task_id]
+            _vfs_locks.pop(task_id, None)  # 清理锁，释放内存
+
+            ctx.staging_area.clear()
+            ctx.copy_mapping.clear()
+            logger.debug(f"VFS 实例已清理: task_id={task_id}")
