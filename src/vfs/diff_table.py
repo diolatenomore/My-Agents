@@ -88,13 +88,39 @@ class OperationTree:
 
 class DiffTable:
     """操作记录交互类，可以存储任务中的操作记录，输出待审核结果"""
-    
+
     @staticmethod
     async def operate(record: DiffRecord):
         """写入单条记录"""
         try:
             async with db_pool.get_conn() as conn:
-                if record.operation_type in (OperationType.RENAME_FILE, OperationType.RENAME_DIR):
+                if record.operation_type == OperationType.RENAME_DIR:
+                    # 把所有前缀为 source_path 的操作 source_path/target_path 修改为 target_path
+                    await conn.execute('''
+                    UPDATE diff_records SET source_path = ? || SUBSTR(source_path, ?)
+                    WHERE task_id = ? AND is_reviewed = 0
+                    AND (source_path = ? OR source_path LIKE ? || '/%')
+                    ''', (record.target_path, len(record.source_path) + 1, record.task_id,
+                          record.source_path, record.source_path))
+                    await conn.execute('''
+                    UPDATE diff_records SET target_path = ? || SUBSTR(target_path, ?)
+                    WHERE task_id = ? AND is_reviewed = 0 AND target_path IS NOT NULL AND
+                    AND (target_path = ? OR target_path LIKE ? || '/%')
+                    ''', (record.target_path, len(record.source_path) + 1, record.task_id,
+                          record.source_path, record.source_path))
+                    # 已存在 rename_dir 记录，则更新 target_path
+                    cursor = await conn.execute('''
+                    SELECT id FROM diff_records
+                    WHERE task_id = ? AND operation_type = ? AND target_path = ? AND is_reviewed = 0
+                    LIMIT 1
+                    ''', (record.task_id, OperationType.RENAME_DIR.value, record.source_path))
+                    row = await cursor.fetchone()
+                    if row:
+                        await conn.execute('''
+                        UPDATE diff_records SET target_path = ? WHERE id = ?
+                        ''', (record.target_path, row['id']))
+                        return
+                elif record.operation_type == OperationType.RENAME_FILE:
                     # 检查是否已有链式重命名记录：若已有 a->b，本次为 b->c，则更新为 a->c
                     cursor = await conn.execute('''
                     SELECT id, created_at FROM diff_records
@@ -103,30 +129,18 @@ class DiffTable:
                     ''', (record.task_id, record.operation_type.value, record.source_path))
                     row = await cursor.fetchone()
                     if row:
-                        rename_id = row['id']
-                        rename_created_at = row['created_at']
                         # 更新 rename 记录：a->b 变为 a->c
                         await conn.execute('''
                         UPDATE diff_records SET target_path = ? WHERE id = ?
-                        ''', (record.target_path, rename_id))
+                        ''', (record.target_path, row['id']))
                         # 将 rename 之后引用 b 作为 source_path 的记录同步改为 c
-                        if record.operation_type == OperationType.RENAME_FILE:
-                            # 精确匹配
-                            await conn.execute('''
-                            UPDATE diff_records SET source_path = ?
-                            WHERE task_id = ? AND is_reviewed = 0
-                            AND source_path = ? AND created_at > ?
-                            ''', (record.target_path, record.task_id, record.source_path, rename_created_at))
-                        else:
-                            # 前缀匹配
-                            await conn.execute('''
-                            UPDATE diff_records SET source_path = ? || SUBSTR(source_path, ?)
-                            WHERE task_id = ? AND is_reviewed = 0
-                            AND source_path LIKE ? AND created_at > ?
-                            ''', (record.target_path, len(record.source_path) + 1, record.task_id,
-                                  record.source_path + "/%", rename_created_at))
+                        await conn.execute('''
+                        UPDATE diff_records SET source_path = ?
+                        WHERE task_id = ? AND is_reviewed = 0
+                        AND source_path = ? AND created_at > ?
+                        ''', (record.target_path, record.task_id, record.source_path, row['created_at']))
                         return
-
+                # 其他情况：直接插入
                 await conn.execute('''
                 INSERT INTO diff_records (task_id, operation_type, source_path, target_path, step, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)

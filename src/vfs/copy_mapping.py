@@ -233,7 +233,7 @@ class CopyMapping:
                     # 结束
                     break
 
-    async def rename(self, old_path: str, new_path: str):
+    async def rename(self, old_path: str, new_path: str, _conn: aiosqlite.Connection = None):
         """修改映射"""
 
         # 如果old_path作为source_path，则更新缓存
@@ -250,6 +250,9 @@ class CopyMapping:
         # 更新数据库，把old_path（source_path/target_path）替换为new_path
         try:
             async with db_pool.get_conn() as conn:
+                # 注入conn，与审批时同一事务执行
+                if _conn:
+                    conn = _conn
                 # 更新原路径为old_path的记录
                 await conn.execute(
                     "UPDATE copy_records SET source_path = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ?",
@@ -265,7 +268,7 @@ class CopyMapping:
 
         logger.debug(f"修改文件复制映射，从{old_path}到{new_path}")
 
-    async def rename_dir(self, old_dir_path: str, new_dir_path: str):
+    async def rename_dir(self, old_dir_path: str, new_dir_path: str, _conn: aiosqlite.Connection = None):
         """修改目录映射"""
         # 1. 处理 dir_mapping
         new_dir_mapping = {}
@@ -329,6 +332,9 @@ class CopyMapping:
         # 更新数据库
         try:
             async with db_pool.get_conn() as conn:
+                # 注入conn，与审批时同一事务执行
+                if _conn:
+                    conn = _conn
                 # 情况 A：更新目录本身（is_dir = 1 且路径完全匹配）
                 # 更新 source_path 匹配的记录
                 await conn.execute(

@@ -204,9 +204,6 @@ class ReviewManager:
         """
         处理单条审批的核心逻辑。
         """
-        staging_area = get_staging_area()
-        copy_mapping = get_copy_mapping()
-        # 在事务内进行
         try:
             async with db_pool.get_conn() as conn:
                 # 1. 查 item
@@ -220,7 +217,6 @@ class ReviewManager:
                     logger.warning(f"审批项 {item_id} 已处理或不存在")
                     return
 
-
                 parent_id = row['parent_id']
                 op_type = row['op_type']
                 source = row['source']
@@ -228,22 +224,20 @@ class ReviewManager:
 
                 # 2a. 通过时级联通过父操作
                 if approved and parent_id:
-                    await ReviewManager._cascade_approve_parents(
-                        conn, task_id, parent_id, copy_mapping, staging_area)
+                    await ReviewManager._cascade_approve_parents(conn, task_id, parent_id)
 
                 # 2b. 拒绝目录操作时级联拒绝子操作
                 if not approved and op_type in ('MKDIR', 'RENAME_DIR', 'DELETE_DIR'):
-                    await ReviewManager._cascade_reject_children(
-                        conn, task_id, item_id, staging_area)
+                    await ReviewManager._cascade_reject_children(conn, task_id, item_id)
 
                 # 3. 通过时：检查写时复制 → 执行真实文件操作
                 if approved:
-                    await ReviewManager._do_write_copy_checks(copy_mapping, op_type, source)
+                    await ReviewManager._do_write_copy_checks(op_type, source)
                     await ReviewManager._apply_operation(op_type, source, target)
 
                 # 4. 清理 VFS 状态
                 await ReviewManager._clean_vfs_state(
-                    conn, task_id, op_type, source, target, approved, staging_area)
+                    conn, task_id, op_type, source, target, approved)
 
                 # 5. 更新 review_items.status
                 new_status = 'approved' if approved else 'rejected'
@@ -258,8 +252,7 @@ class ReviewManager:
 
 
     @staticmethod
-    async def _cascade_approve_parents(conn, task_id: str, parent_id: str,
-                                copy_mapping, staging_area):
+    async def _cascade_approve_parents(conn, task_id: str, parent_id: str):
         """递归执行父级审批链（仅通过时调用）。先处理更上级的祖先，再处理当前父级。"""
         cursor = await conn.execute(
             "SELECT id, parent_id, op_type, source, target"
@@ -272,26 +265,24 @@ class ReviewManager:
 
         # 先递归处理祖父
         if parent_row['parent_id']:
-            await ReviewManager._cascade_approve_parents(
-                conn, task_id, parent_row['parent_id'], copy_mapping, staging_area)
+            await ReviewManager._cascade_approve_parents(conn, task_id, parent_row['parent_id'])
 
         # 执行当前父级
         p_op = parent_row['op_type']
         p_source = parent_row['source']
         p_target = parent_row['target']
 
-        await ReviewManager._do_write_copy_checks(copy_mapping, p_op, p_source)
+        await ReviewManager._do_write_copy_checks(p_op, p_source)
         await ReviewManager._apply_operation(p_op, p_source, p_target)
         await ReviewManager._clean_vfs_state(
-            conn, task_id, p_op, p_source, p_target, True, staging_area)
+            conn, task_id, p_op, p_source, p_target, True)
         await conn.execute(
             "UPDATE review_items SET status = 'approved' WHERE id = ?",
             (parent_id,),
         )
 
     @staticmethod
-    async def _cascade_reject_children(conn, task_id: str, parent_id: str,
-                                        staging_area):
+    async def _cascade_reject_children(conn, task_id: str, parent_id: str):
         """拒绝目录操作时递归级联拒绝所有子孙操作。不执行 apply，仅清理 VFS + 标记 rejected。"""
         cursor = await conn.execute(
             "SELECT id, op_type, source, target FROM review_items "
@@ -301,21 +292,20 @@ class ReviewManager:
         children = await cursor.fetchall()
         for child in children:
             # 先递归处理子节点的子节点
-            await ReviewManager._cascade_reject_children(
-                conn, task_id, child['id'], staging_area)
-            # 清理 VFS（不执行 apply）
+            await ReviewManager._cascade_reject_children(conn, task_id, child['id'])
+            # 清理 VFS
             await ReviewManager._clean_vfs_state(
                 conn, task_id, child['op_type'],
-                child['source'], child['target'], False, staging_area)
+                child['source'], child['target'], False)
             await conn.execute(
                 "UPDATE review_items SET status = 'rejected' WHERE id = ?",
                 (child['id'],),
             )
 
     @staticmethod
-    async def _do_write_copy_checks(copy_mapping, op_type: str, path: str):
+    async def _do_write_copy_checks(op_type: str, path: str):
         """根据操作类型检查并触发写时复制"""
-        # TODO 待确认
+        copy_mapping = get_copy_mapping()
         if op_type in ('CREATE_FILE', 'MODIFY_FILE'):
             await copy_mapping.copy_if_need(path)
         if op_type in ('MODIFY_FILE', 'DELETE_FILE'):
@@ -368,8 +358,70 @@ class ReviewManager:
         return None
 
     @staticmethod
+    async def _clean_rename_diff_records(conn, task_id: str, op_type: str,
+                                         source: str, target: str, approved: bool):
+        """清理 rename 的 diff_records，拒绝时同步回退 staging_area 和 copy_mapping
+
+        拒绝 rename 时，staging_area 和 copy_mapping 中原先已记录了 rename 的影响，
+        需反向调用 rename/rename_dir 将路径恢复为原值。
+        """
+        rename_cursor = await conn.execute(
+            "SELECT id, created_at FROM diff_records "
+            "WHERE task_id = ? AND operation_type = ? AND source_path = ? AND is_reviewed = 0",
+            (task_id, op_type, source),
+        )
+        rename_row = await rename_cursor.fetchone()
+        if not rename_row:
+            return
+
+        if not approved:
+            if op_type == 'RENAME_FILE':
+                # diff_records：rename 之后引用 target 的 source_path 回退为 source
+                await conn.execute(
+                    "UPDATE diff_records SET source_path = ? "
+                    "WHERE task_id = ? AND is_reviewed = 0 "
+                    "AND source_path = ? AND created_at > ?",
+                    (source, task_id, target, rename_row['created_at']),
+                )
+                # staging_area / copy_mapping 回退
+                staging_area = get_staging_area()
+                await staging_area.rename(target, source, conn)
+                copy_mapping = get_copy_mapping()
+                await copy_mapping.rename(target, source, conn)
+            else:
+                # diff_records：source_path / target_path 前缀为 target 的改回 source
+                await conn.execute(
+                    "UPDATE diff_records SET source_path = ? || SUBSTR(source_path, ?) "
+                    "WHERE task_id = ? AND is_reviewed = 0 AND operation_type != ? "
+                    "AND (source_path = ? OR source_path LIKE ? || '/%') "
+                    "AND created_at > ?",
+                    (source, len(target) + 1, task_id, OperationType.RENAME_DIR.value,
+                     target, target, rename_row['created_at']),
+                )
+                await conn.execute(
+                    "UPDATE diff_records SET target_path = ? || SUBSTR(target_path, ?) "
+                    "WHERE task_id = ? AND is_reviewed = 0 "
+                    "AND target_path IS NOT NULL AND operation_type != ? "
+                    "AND (target_path = ? OR target_path LIKE ? || '/%') "
+                    "AND created_at > ?",
+                    (source, len(target) + 1, task_id, OperationType.RENAME_DIR.value,
+                     target, target, rename_row['created_at']),
+                )
+                # staging_area / copy_mapping 回退
+                staging_area = get_staging_area()
+                await staging_area.rename_dir(target, source, conn)
+                copy_mapping = get_copy_mapping()
+                await copy_mapping.rename_dir(target, source, conn)
+
+        # 标记 rename 自身为已审批
+        await conn.execute(
+            "UPDATE diff_records SET is_reviewed = 1 WHERE id = ?",
+            (rename_row['id'],),
+        )
+
+    @staticmethod
     async def _clean_vfs_state(conn, task_id: str, op_type: str, source: str,
-                               target: str, approved: bool, staging):
+                               target: str, approved: bool):
         """清理该路径相关的 VFS 状态：diff_records + staging_records + copy_records + 磁盘文件
 
         Args:
@@ -379,66 +431,33 @@ class ReviewManager:
             source:    source_path
             target:    target_path（rename 时使用）
             approved:  True=通过, False=拒绝
-            staging:   StagingArea 实例（可选）
         """
         # 1. 清理 diff_records
         if op_type in ('RENAME_FILE', 'RENAME_DIR'):
-            rename_cursor = await conn.execute(
-                "SELECT id, created_at FROM diff_records "
-                "WHERE task_id = ? AND operation_type = ? AND source_path = ? AND is_reviewed = 0",
-                (task_id, op_type, source),
-            )
-            rename_row = await rename_cursor.fetchone()
-            if rename_row:
-                if approved:
-                    # 通过：rename 之前的操作 source_path 改为 target_path
-                    if op_type == 'RENAME_FILE':
-                        # 精确匹配
-                        await conn.execute(
-                            "UPDATE diff_records SET source_path = ? "
-                            "WHERE task_id = ? AND is_reviewed = 0 "
-                            "AND source_path = ? AND created_at < ?",
-                            (target, task_id, source, rename_row['created_at']),
-                        )
-                    else:
-                        # 前缀匹配
-                        await conn.execute(
-                            "UPDATE diff_records SET source_path = ? || SUBSTR(source_path, ?) "
-                            "WHERE task_id = ? AND is_reviewed = 0 "
-                            "AND source_path LIKE ? AND created_at < ?",
-                            (target, len(source) + 1, task_id,
-                             source + "/%", rename_row['created_at']),
-                        )
-                else:
-                    # 拒绝：rename 之后的操作 source_path 回退
-                    if op_type == 'RENAME_FILE':
-                        # 精确匹配
-                        await conn.execute(
-                            "UPDATE diff_records SET source_path = ? "
-                            "WHERE task_id = ? AND is_reviewed = 0 "
-                            "AND source_path = ? AND created_at > ?",
-                            (source, task_id, target, rename_row['created_at']),
-                        )
-                    else:
-                        # 前缀匹配
-                        await conn.execute(
-                            "UPDATE diff_records SET source_path = ? || SUBSTR(source_path, ?) "
-                            "WHERE task_id = ? AND is_reviewed = 0 "
-                            "AND source_path LIKE ? AND created_at > ?",
-                            (source, len(target) + 1, task_id,
-                             target + "/%", rename_row['created_at']),
-                        )
-                # 标记 rename 自身
-                await conn.execute(
-                    "UPDATE diff_records SET is_reviewed = 1 WHERE id = ?",
-                    (rename_row['id'],),
-                )
+            await ReviewManager._clean_rename_diff_records(conn, task_id, op_type, source, target, approved)
+            return
         else:
             await conn.execute(
                 "UPDATE diff_records SET is_reviewed = 1 "
                 "WHERE task_id = ? AND source_path = ? AND is_reviewed = 0",
                 (task_id, source),
             )
+            # 检查是否存在 target_path == source 的 rename 记录
+            # 场景：rename a->b，后续操作 source=b，需连带清理 rename 及之前的记录
+            rename_cursor = await conn.execute(
+                "SELECT id, created_at, source_path FROM diff_records "
+                "WHERE task_id = ? AND operation_type = 'RENAME_FILE' AND target_path = ? AND is_reviewed = 0",
+                (task_id, source),
+            )
+            rename_row = await rename_cursor.fetchone()
+            if rename_row:
+                # 标记 rename 之前 source_path 与 rename_source 匹配的记录
+                await conn.execute(
+                    "UPDATE diff_records SET is_reviewed = 1 "
+                    "WHERE task_id = ? AND is_reviewed = 0 "
+                    "AND source_path = ? AND created_at < ?",
+                    (task_id, rename_row['source_path'], rename_row['created_at']),
+                )
 
         # 2. copy_records（可能作为 source 或 target）
         await conn.execute(
@@ -447,13 +466,13 @@ class ReviewManager:
         )
 
         # 3. 磁盘 staging 文件
-        if staging:
-            staging_path = staging.get_staging_path(source)
-            if staging_path and os.path.exists(staging_path):
-                try:
-                    os.remove(staging_path)
-                except Exception as e:
-                    logger.error(f"删除暂存区文件失败 {staging_path}: {e}")
+        staging_area = get_staging_area()
+        staging_path = staging_area.get_staging_path(source)
+        if staging_path and os.path.exists(staging_path):
+            try:
+                os.remove(staging_path)
+            except Exception as e:
+                logger.error(f"删除暂存区文件失败 {staging_path}: {e}")
 
         # 4. staging_records
         await conn.execute(

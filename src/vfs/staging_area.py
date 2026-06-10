@@ -3,6 +3,8 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+import aiosqlite
+
 from src.config import STAGING_AREA_PATH
 from src.db.sqlite_pool import db_pool
 from src.utils.common import logger
@@ -213,7 +215,7 @@ class StagingArea:
         """判断path是否在暂存区内删除（真实路径可能还存在）"""
         return self.deleted_dir_mapping.get(path, False)
 
-    async def rename(self, old_path: str, new_path: str) -> None:
+    async def rename(self, old_path: str, new_path: str, _conn: aiosqlite.Connection = None) -> None:
         """
         重命名暂存区路径
         """
@@ -229,6 +231,9 @@ class StagingArea:
         # 更新数据库
         try:
             async with db_pool.get_conn() as conn:
+                # 注入conn，与审批时同一事务执行
+                if _conn:
+                    conn = _conn
                 # 检查旧路径是否存在
                 cursor = await conn.execute(
                     "SELECT id FROM staging_records WHERE task_id = ? AND path = ?",
@@ -258,7 +263,7 @@ class StagingArea:
 
         logger.debug(f"在暂存区重命名文件{old_path}为{new_path}")
 
-    async def rename_dir(self, old_dir_path: str, new_dir_path: str) -> None:
+    async def rename_dir(self, old_dir_path: str, new_dir_path: str, _conn: aiosqlite.Connection = None) -> None:
         """
         重命名目录暂存区路径
         """
@@ -291,6 +296,9 @@ class StagingArea:
         # 更新数据库
         try:
             async with db_pool.get_conn() as conn:
+                # 注入conn，与审批时同一事务执行
+                if _conn:
+                    conn = _conn
                 # 处理主目录
                 # 检查旧目录记录是否存在
                 cursor = await conn.execute(
