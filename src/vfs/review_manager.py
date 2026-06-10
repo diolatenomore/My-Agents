@@ -135,8 +135,8 @@ class ReviewManager:
         try:
             async with db_pool.get_conn() as conn:
                 cursor = await conn.execute(
-                    """SELECT id, parent_id, op_type, source, target, copy_source, status
-                       FROM review_items WHERE task_id = ?
+                    """SELECT id, parent_id, op_type, source, target, copy_source
+                       FROM review_items WHERE task_id = ? AND status = 'pending'
                        ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, created_at""",
                     (task_id,),
                 )
@@ -158,7 +158,6 @@ class ReviewManager:
                 'source': row['source'],
                 'target': row['target'] or '',
                 'copy_source': row['copy_source'] or '',
-                'status': row['status'],
             }
             lookup[row['id']] = item
 
@@ -212,48 +211,30 @@ class ReviewManager:
             async with db_pool.get_conn() as conn:
                 # 1. 查 item
                 cursor = await conn.execute(
-                    "SELECT id, parent_id, op_type, source, target, status "
-                    "FROM review_items WHERE id = ?",
+                    "SELECT id, parent_id, op_type, source, target"
+                    "FROM review_items WHERE id = ? AND status = 'pending'",
                     (item_id,),
                 )
                 row = await cursor.fetchone()
                 if not row:
-                    logger.warning(f"审批项 {item_id} 不存在")
+                    logger.warning(f"审批项 {item_id} 已处理或不存在")
                     return
-                if row['status'] != 'pending':
-                    logger.warning(f"审批项 {item_id} 已处理")
-                    return
+
 
                 parent_id = row['parent_id']
                 op_type = row['op_type']
                 source = row['source']
                 target = row['target']
 
-                # 2. 级联处理父级 TODO 改为调用递归函数，并注入conn
-                if parent_id:
-                    p_cursor = await conn.execute(
-                        "SELECT id, op_type, source, target, status "
-                        "FROM review_items WHERE id = ?",
-                        (parent_id,),
-                    )
-                    parent_row = await p_cursor.fetchone()
+                # 2a. 通过时级联通过父操作
+                if approved and parent_id:
+                    await ReviewManager._cascade_approve_parents(
+                        conn, task_id, parent_id, copy_mapping, staging_area)
 
-                    if parent_row and parent_row['status'] == 'pending':
-                        p_op = parent_row['op_type']
-                        p_source = parent_row['source']
-                        p_target = parent_row['target']
-
-                        # 父级 DB 外的操作需在事务内尽早执行
-                        if approved:
-                            await ReviewManager._do_write_copy_checks(copy_mapping, p_op, p_source)
-                            await ReviewManager._apply_operation(p_op, p_source, p_target)
-
-                        await ReviewManager._clean_vfs_state(
-                            conn, task_id, p_op, p_source, p_target, True, staging_area)
-                        await conn.execute(
-                            "UPDATE review_items SET status = 'approved' WHERE id = ?",
-                            (parent_id,),
-                        )
+                # 2b. 拒绝目录操作时级联拒绝子操作
+                if not approved and op_type in ('MKDIR', 'RENAME_DIR', 'DELETE_DIR'):
+                    await ReviewManager._cascade_reject_children(
+                        conn, task_id, item_id, staging_area)
 
                 # 3. 通过时：检查写时复制 → 执行真实文件操作
                 if approved:
@@ -275,6 +256,61 @@ class ReviewManager:
         except Exception as e:
             logger.error(f"处理审批项失败: {e}")
 
+
+    @staticmethod
+    async def _cascade_approve_parents(conn, task_id: str, parent_id: str,
+                                copy_mapping, staging_area):
+        """递归执行父级审批链（仅通过时调用）。先处理更上级的祖先，再处理当前父级。"""
+        cursor = await conn.execute(
+            "SELECT id, parent_id, op_type, source, target"
+            "FROM review_items WHERE id = ? AND status = 'pending'",
+            (parent_id,),
+        )
+        parent_row = await cursor.fetchone()
+        if not parent_row:
+            return
+
+        # 先递归处理祖父
+        if parent_row['parent_id']:
+            await ReviewManager._cascade_approve_parents(
+                conn, task_id, parent_row['parent_id'], copy_mapping, staging_area)
+
+        # 执行当前父级
+        p_op = parent_row['op_type']
+        p_source = parent_row['source']
+        p_target = parent_row['target']
+
+        await ReviewManager._do_write_copy_checks(copy_mapping, p_op, p_source)
+        await ReviewManager._apply_operation(p_op, p_source, p_target)
+        await ReviewManager._clean_vfs_state(
+            conn, task_id, p_op, p_source, p_target, True, staging_area)
+        await conn.execute(
+            "UPDATE review_items SET status = 'approved' WHERE id = ?",
+            (parent_id,),
+        )
+
+    @staticmethod
+    async def _cascade_reject_children(conn, task_id: str, parent_id: str,
+                                        staging_area):
+        """拒绝目录操作时递归级联拒绝所有子孙操作。不执行 apply，仅清理 VFS + 标记 rejected。"""
+        cursor = await conn.execute(
+            "SELECT id, op_type, source, target FROM review_items "
+            "WHERE parent_id = ? AND status = 'pending'",
+            (parent_id,),
+        )
+        children = await cursor.fetchall()
+        for child in children:
+            # 先递归处理子节点的子节点
+            await ReviewManager._cascade_reject_children(
+                conn, task_id, child['id'], staging_area)
+            # 清理 VFS（不执行 apply）
+            await ReviewManager._clean_vfs_state(
+                conn, task_id, child['op_type'],
+                child['source'], child['target'], False, staging_area)
+            await conn.execute(
+                "UPDATE review_items SET status = 'rejected' WHERE id = ?",
+                (child['id'],),
+            )
 
     @staticmethod
     async def _do_write_copy_checks(copy_mapping, op_type: str, path: str):
