@@ -91,6 +91,7 @@ class DiffTable:
     
     @staticmethod
     async def operate(record: DiffRecord):
+        """写入单条记录"""
         try:
             async with db_pool.get_conn() as conn:
                 if record.operation_type in (OperationType.RENAME_FILE, OperationType.RENAME_DIR):
@@ -109,10 +110,21 @@ class DiffTable:
                         UPDATE diff_records SET target_path = ? WHERE id = ?
                         ''', (record.target_path, rename_id))
                         # 将 rename 之后引用 b 作为 source_path 的记录同步改为 c
-                        await conn.execute('''
-                        UPDATE diff_records SET source_path = ?
-                        WHERE task_id = ? AND is_reviewed = 0 AND source_path = ? AND created_at > ?
-                        ''', (record.target_path, record.task_id, record.source_path, rename_created_at))
+                        if record.operation_type == OperationType.RENAME_FILE:
+                            # 精确匹配
+                            await conn.execute('''
+                            UPDATE diff_records SET source_path = ?
+                            WHERE task_id = ? AND is_reviewed = 0
+                            AND source_path = ? AND created_at > ?
+                            ''', (record.target_path, record.task_id, record.source_path, rename_created_at))
+                        else:
+                            # 前缀匹配
+                            await conn.execute('''
+                            UPDATE diff_records SET source_path = ? || SUBSTR(source_path, ?)
+                            WHERE task_id = ? AND is_reviewed = 0
+                            AND source_path LIKE ? AND created_at > ?
+                            ''', (record.target_path, len(record.source_path) + 1, record.task_id,
+                                  record.source_path + "/%", rename_created_at))
                         return
 
                 await conn.execute('''
