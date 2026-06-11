@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List
 import os
 
+import aiosqlite
+
 from src.db.sqlite_pool import db_pool
 from src.vfs.staging_area import StagingArea
 from src.utils.vfs import copy
@@ -83,8 +85,11 @@ class CopyMapping:
         # 已被拷贝数与总数不一致则返回true
         return copied_num != registered_num
 
-    async def mark_copied(self, source_path: str):
-        """拷贝所有未被拷贝的文件并修改标记"""
+    async def mark_copied(self, source_path: str, _conn: aiosqlite.Connection = None):
+        """
+        拷贝所有未被拷贝的文件并修改标记
+        :param _conn: 审批阶段注入的数据库连接，用于保持同一事务
+        """
         records = await self.get_from_db(task_id=self.task_id, source_path=source_path)
         # 如果原文件有暂存区路径则使用
         source_staging_path = self._staging_area.mapping.get(source_path)  # 直接获取路径，不判断是否被删除
@@ -105,10 +110,17 @@ class CopyMapping:
         # 更新数据库
         if update_ids:
             try:
-                async with db_pool.get_conn() as conn:
-                    # 更新数据库，标记该条记录已完成复制
+                if _conn is None:
+                    async with db_pool.get_conn() as conn:
+                        # 更新数据库，标记该条记录已完成复制
+                        for update_id in update_ids:
+                            await conn.execute(
+                                "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                                (update_id,),
+                            )
+                else:
                     for update_id in update_ids:
-                        await conn.execute(
+                        await _conn.execute(
                             "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
                             (update_id,),
                         )
@@ -133,8 +145,11 @@ class CopyMapping:
         """判断目录是否需要被拷贝"""
         return source_path in self.dir_mapping.keys()
 
-    async def mark_copied_dir(self, source_path: str):
-        """拷贝所有该目录下的未被拷贝的文件并修改标记"""
+    async def mark_copied_dir(self, source_path: str, _conn: aiosqlite.Connection = None):
+        """
+        拷贝所有该目录下的未被拷贝的文件并修改标记
+        :param _conn: 审批阶段注入的数据库连接，用于保持同一事务
+        """
         # 拷贝目录下的所有文件和子目录至暂存区
         target_path = self.dir_mapping[source_path]  # 目标目录完整路径
         for root, dirs, files in os.walk(source_path):
@@ -162,10 +177,17 @@ class CopyMapping:
                 dir_paths_to_update.append(dir_source_path)
 
         try:
-            async with db_pool.get_conn() as conn:
-                # 更新所有目录复制记录，标记为已完成复制
+            if _conn is None:
+                async with db_pool.get_conn() as conn:
+                    # 更新所有目录复制记录，标记为已完成复制
+                    for dir_path in dir_paths_to_update:
+                        await conn.execute(
+                            "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ? AND is_dir = 1",
+                            (self.task_id, dir_path),
+                        )
+            else:
                 for dir_path in dir_paths_to_update:
-                    await conn.execute(
+                    await _conn.execute(
                         "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ? AND is_dir = 1",
                         (self.task_id, dir_path),
                     )
@@ -174,9 +196,10 @@ class CopyMapping:
 
         logger.debug(f"目录{source_path}发生修改，触发拷贝")
 
-    async def copy_if_need(self, target_path: str):
+    async def copy_if_need(self, target_path: str, _conn: aiosqlite.Connection = None):
         """
         判断target_path是否需要拷贝，如果是，拷贝并修改标记。
+        :param _conn: 审批阶段注入的数据库连接，用于保持同一事务
         """
         # 如果暂存区路径在文件系统中实际已存在
         target_staging_path = self._staging_area.get_staging_path(target_path)
@@ -202,9 +225,15 @@ class CopyMapping:
 
             # 更新数据库中的字段
             try:
-                async with db_pool.get_conn() as conn:
-                    # 更新数据库，标记该条记录已完成复制
-                    await conn.execute(
+                if _conn is None:
+                    async with db_pool.get_conn() as conn:
+                        # 更新数据库，标记该条记录已完成复制
+                        await conn.execute(
+                            "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ? AND is_copied = 0",
+                            (self.task_id, target_path),
+                        )
+                else:
+                    await _conn.execute(
                         "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ? AND is_copied = 0",
                         (self.task_id, target_path),
                     )
