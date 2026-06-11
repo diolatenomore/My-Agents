@@ -12,7 +12,7 @@ def discover_tools():
     logger.info("开始加载工具模块...")
     registered_before = len(list_tools())
 
-    import src.tools.file_orgranzie_tools  # noqa: F401
+    import src.tools.vfs_tools  # noqa: F401
 
     registered_after = len(list_tools())
     new_count = registered_after - registered_before
