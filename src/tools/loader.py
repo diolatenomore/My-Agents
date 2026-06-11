@@ -13,6 +13,7 @@ def discover_tools():
     registered_before = len(list_tools())
 
     import src.tools.vfs_tools  # noqa: F401
+    import src.tools.skill_tools  # noqa: F401
 
     registered_after = len(list_tools())
     new_count = registered_after - registered_before

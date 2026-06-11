@@ -130,6 +130,10 @@ class ToolRegistry:
         with self._lock:
             return list(self._tools.keys())
 
+    def get_all_schemas(self) -> List[Dict[str, Any]]:
+        """获取所有工具的 OpenAI Function Calling 格式定义"""
+        return self.get_schemas()
+
     def get_schemas(self, names: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """获取 OpenAI Function Calling 格式的工具定义列表
 
