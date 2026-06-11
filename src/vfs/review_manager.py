@@ -109,10 +109,14 @@ class ReviewManager:
 
         _walk(tree)
 
-        # TODO 需要考虑上一次的未审批完的情况
         # 5. 写入 review_items 表
         try:
             async with db_pool.get_conn() as conn:
+                # 先清理旧的 pending 项，避免重复
+                await conn.execute(
+                    "DELETE FROM review_items WHERE task_id = ? AND status = 'pending'",
+                    (task_id,),
+                )
                 await conn.executemany(
                     """INSERT OR REPLACE INTO review_items 
                        (id, task_id, parent_id, op_type, source, target, copy_source)
@@ -208,7 +212,7 @@ class ReviewManager:
             async with db_pool.get_conn() as conn:
                 # 1. 查 item
                 cursor = await conn.execute(
-                    "SELECT id, parent_id, op_type, source, target"
+                    "SELECT id, parent_id, op_type, source, target "
                     "FROM review_items WHERE id = ? AND status = 'pending'",
                     (item_id,),
                 )
@@ -222,9 +226,29 @@ class ReviewManager:
                 source = row['source']
                 target = row['target']
 
-                # 2a. 通过时级联通过父操作
-                if approved and parent_id:
-                    await ReviewManager._cascade_approve_parents(conn, task_id, parent_id)
+                # 2a. 通过时级联通过父操作和rename操作
+                if approved:
+                    if parent_id:
+                        await ReviewManager._cascade_approve_parents(conn, task_id, parent_id)
+                    # 判断是否有 target == source 的 rename 操作，有则先通过
+                    rename_cursor = await conn.execute(
+                        "SELECT id, op_type, source, target FROM review_items "
+                        "WHERE task_id = ? AND op_type = 'RENAME_FILE'"
+                        "AND target = ? AND status = 'pending'",
+                        (task_id, source),
+                    )
+                    rename_row = await rename_cursor.fetchone()
+                    if rename_row:
+                        r_op = rename_row['op_type']
+                        r_source = rename_row['source']
+                        r_target = rename_row['target']
+                        await ReviewManager._apply_operation(r_op, r_source, r_target)
+                        await ReviewManager._clean_rename_diff_records(
+                            conn, task_id, r_op, r_source, r_target, True)
+                        await conn.execute(
+                            "UPDATE review_items SET status = 'approved' WHERE id = ?",
+                            (rename_row['id'],),
+                        )
 
                 # 2b. 拒绝目录操作时级联拒绝子操作
                 if not approved and op_type in ('MKDIR', 'RENAME_DIR', 'DELETE_DIR'):
@@ -232,7 +256,7 @@ class ReviewManager:
 
                 # 3. 通过时：检查写时复制 → 执行真实文件操作
                 if approved:
-                    await ReviewManager._do_write_copy_checks(op_type, source)
+                    await ReviewManager._do_write_copy_checks(conn, op_type, source)
                     await ReviewManager._apply_operation(op_type, source, target)
 
                 # 4. 清理 VFS 状态
@@ -255,7 +279,7 @@ class ReviewManager:
     async def _cascade_approve_parents(conn, task_id: str, parent_id: str):
         """递归执行父级审批链（仅通过时调用）。先处理更上级的祖先，再处理当前父级。"""
         cursor = await conn.execute(
-            "SELECT id, parent_id, op_type, source, target"
+            "SELECT id, parent_id, op_type, source, target "
             "FROM review_items WHERE id = ? AND status = 'pending'",
             (parent_id,),
         )
@@ -272,7 +296,7 @@ class ReviewManager:
         p_source = parent_row['source']
         p_target = parent_row['target']
 
-        await ReviewManager._do_write_copy_checks(p_op, p_source)
+        await ReviewManager._do_write_copy_checks(conn, p_op, p_source)
         await ReviewManager._apply_operation(p_op, p_source, p_target)
         await ReviewManager._clean_vfs_state(
             conn, task_id, p_op, p_source, p_target, True)
@@ -303,17 +327,17 @@ class ReviewManager:
             )
 
     @staticmethod
-    async def _do_write_copy_checks(op_type: str, path: str):
+    async def _do_write_copy_checks(conn, op_type: str, path: str):
         """根据操作类型检查并触发写时复制"""
         copy_mapping = get_copy_mapping()
         if op_type in ('CREATE_FILE', 'MODIFY_FILE'):
-            await copy_mapping.copy_if_need(path)
+            await copy_mapping.copy_if_need(path, _conn=conn)
         if op_type in ('MODIFY_FILE', 'DELETE_FILE'):
             if copy_mapping.need_copied(path):
-                await copy_mapping.mark_copied(path)
+                await copy_mapping.mark_copied(path, _conn=conn)
         if op_type == 'DELETE_DIR':
             if copy_mapping.need_copied_dir(path):
-                await copy_mapping.mark_copied_dir(path)
+                await copy_mapping.mark_copied_dir(path, _conn=conn)
 
     @staticmethod
     async def _apply_operation(op_type: str, source: str, target: str):
@@ -321,29 +345,36 @@ class ReviewManager:
         # TODO 待确认
         try:
             if op_type == 'MKDIR':
-                os.makedirs(source, exist_ok=True)
+                logger.info(f"[APPLY] MKDIR: {source}")
+                # os.makedirs(source, exist_ok=True)
             elif op_type == 'CREATE_FILE':
-                staging_path = ReviewManager._resolve_staging_path(source)
-                if staging_path and os.path.exists(staging_path):
-                    os.makedirs(os.path.dirname(source), exist_ok=True)
-                    shutil.copy(staging_path, source)
+                logger.info(f"[APPLY] CREATE_FILE: {source}")
+                # staging_path = ReviewManager._resolve_staging_path(source)
+                # if staging_path and os.path.exists(staging_path):
+                #     os.makedirs(os.path.dirname(source), exist_ok=True)
+                #     shutil.copy(staging_path, source)
             elif op_type == 'MODIFY_FILE':
-                staging_path = ReviewManager._resolve_staging_path(source)
-                if staging_path and os.path.exists(staging_path):
-                    shutil.copy(staging_path, source)
+                logger.info(f"[APPLY] MODIFY_FILE: {source}")
+                # staging_path = ReviewManager._resolve_staging_path(source)
+                # if staging_path and os.path.exists(staging_path):
+                #     shutil.copy(staging_path, source)
             elif op_type == 'DELETE_FILE':
-                if os.path.exists(source):
-                    os.remove(source)
+                logger.info(f"[APPLY] DELETE_FILE: {source}")
+                # if os.path.exists(source):
+                #     os.remove(source)
             elif op_type == 'RENAME_FILE':
-                if os.path.exists(source):
-                    os.makedirs(os.path.dirname(target), exist_ok=True)
-                    os.rename(source, target)
+                logger.info(f"[APPLY] RENAME_FILE: {source} -> {target}")
+                # if os.path.exists(source):
+                #     os.makedirs(os.path.dirname(target), exist_ok=True)
+                #     os.rename(source, target)
             elif op_type == 'DELETE_DIR':
-                if os.path.exists(source):
-                    shutil.rmtree(source)
+                logger.info(f"[APPLY] DELETE_DIR: {source}")
+                # if os.path.exists(source):
+                #     shutil.rmtree(source)
             elif op_type == 'RENAME_DIR':
-                if os.path.exists(source):
-                    os.rename(source, target)
+                logger.info(f"[APPLY] RENAME_DIR: {source} -> {target}")
+                # if os.path.exists(source):
+                #     os.rename(source, target)
         except Exception as e:
             logger.error(f"执行真实文件操作失败 [{op_type} {source}]: {e}")
 
