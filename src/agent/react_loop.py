@@ -9,6 +9,7 @@ from langchain_openai import ChatOpenAI
 from src.agent.agent_config import AgentConfig
 from src.agent.prompts import DEFAULT_SYSTEM_PROMPT
 from src.config import DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
+from src.skills.loader import build_skills_catalog
 from src.tools.registry import registry
 from src.utils.common import logger
 
@@ -35,7 +36,7 @@ async def run_agent(
         query: 用户输入
         history: 历史消息列表（由调用者从持久化存储加载）
         config: Agent 配置
-        system_prompt: 自定义 system prompt
+        system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
         tools: 工具列表，不传则使用所有注册工具
 
     Returns:
@@ -43,7 +44,7 @@ async def run_agent(
     """
     cfg = config or AgentConfig()
     tools = tools or registry.get_all_schemas()
-    prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+    prompt = _build_system_prompt(system_prompt)
 
     messages = _build_messages(prompt, history, query)
 
@@ -93,7 +94,7 @@ async def run_agent_stream(
         query: 用户输入
         history: 历史消息列表（由调用者从持久化存储加载）
         config: Agent 配置
-        system_prompt: 自定义 system prompt
+        system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
         tools: 工具列表，不传则使用所有注册工具
 
     Yields:
@@ -101,7 +102,7 @@ async def run_agent_stream(
     """
     cfg = config or AgentConfig()
     tools = tools or registry.get_all_schemas()
-    prompt = system_prompt or DEFAULT_SYSTEM_PROMPT
+    prompt = _build_system_prompt(system_prompt)
 
     messages = _build_messages(prompt, history, query)
 
@@ -165,7 +166,7 @@ async def run_agent_stream(
                     logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
 
                 try:
-                    observation = registry.dispatch(tool_name, tool_args)
+                    observation = await registry.dispatch(tool_name, tool_args)
                 except Exception as e:
                     observation = f"工具执行失败: {e}"
                     logger.error(f"[Agent] 工具 '{tool_name}' 执行失败: {e}")
@@ -233,7 +234,7 @@ async def _execute_loop(model_with_tools, messages, cfg):
             if cfg.verbose:
                 logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
 
-            observation = registry.dispatch(tool_name, tool_args)
+            observation = await registry.dispatch(tool_name, tool_args)
 
             if cfg.verbose:
                 logger.info(f"[Agent] 工具返回: {str(observation)[:200]}{'...' if len(str(observation)) > 200 else ''}")
@@ -250,3 +251,14 @@ async def _execute_loop(model_with_tools, messages, cfg):
     messages.append(final_response)
 
     return iterations, total_tool_calls
+
+
+def _build_system_prompt(custom_prompt: Optional[str] = None) -> str:
+    """构建 system prompt：自定义 > 默认 + 技能目录"""
+    if custom_prompt:
+        return custom_prompt
+    prompt = DEFAULT_SYSTEM_PROMPT
+    catalog = build_skills_catalog()
+    if catalog:
+        prompt += "\n\n" + catalog
+    return prompt
