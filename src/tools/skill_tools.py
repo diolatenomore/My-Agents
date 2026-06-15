@@ -7,18 +7,8 @@
 
 from pydantic import BaseModel, Field
 
-from src.skills.loader import SkillLoader
+from src.skills.loader import get_loader
 from src.tools.registry import registry
-
-# 懒加载 skill_loader，在首次工具调用时初始化
-_loader: SkillLoader | None = None
-
-
-def _get_loader() -> SkillLoader:
-    global _loader
-    if _loader is None:
-        _loader = SkillLoader()
-    return _loader
 
 
 class LoadSkillInput(BaseModel):
@@ -26,15 +16,8 @@ class LoadSkillInput(BaseModel):
 
 
 def load_skill(name: str) -> str:
-    """加载指定技能的完整 SKILL.md 内容
-
-    Args:
-        name: 技能名称
-
-    Returns:
-        技能的完整指令内容
-    """
-    loader = _get_loader()
+    """加载指定技能的完整 SKILL.md 内容"""
+    loader = get_loader()
     content = loader.load_skill(name)
     if content is None:
         # 列出可用技能帮助 LLM 修正
@@ -49,12 +32,8 @@ class ListSkillsInput(BaseModel):
 
 
 def list_skills() -> str:
-    """列出所有可用技能的名称和描述
-
-    Returns:
-        格式化的技能列表
-    """
-    loader = _get_loader()
+    """列出所有可用技能的名称和描述"""
+    loader = get_loader()
     metas = loader.discover()
     if not metas:
         return "当前没有可用技能。"
@@ -71,9 +50,7 @@ def list_skills() -> str:
 
 registry.register(
     name="load_skill",
-    description=(
-        "加载指定技能的完整指令。当你判断当前任务需要某个技能时调用此工具。先调用 list_skills 查看可用技能，再根据任务需求调用 load_skill 加载对应技能。"
-    ),
+    description="加载指定技能的完整指令。当判断当前任务需要某个技能时调用此工具。",
     handler=load_skill,
     args_schema=LoadSkillInput,
 )

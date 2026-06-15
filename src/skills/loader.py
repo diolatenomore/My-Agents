@@ -7,6 +7,7 @@
 """
 
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -33,7 +34,9 @@ class SkillLoader:
             skills_dir: skills 根目录路径，支持相对路径（相对于项目根目录）
         """
         self._skills_dir = skills_dir
-        self._cache: dict[str, str] = {}  # name → 完整 SKILL.md 内容
+        self._lock = threading.RLock()
+        self._metas: Optional[list[SkillMeta]] = None  # Level 1 缓存
+        self._content_cache: dict[str, str] = {}        # Level 2/3 缓存
 
     @property
     def skills_dir(self) -> str:
@@ -49,28 +52,34 @@ class SkillLoader:
         Returns:
             SkillMeta 列表，按 name 排序
         """
-        dir_path = self.skills_dir
-        if not os.path.isdir(dir_path):
-            logger.warning(f"Skills 目录不存在: {dir_path}")
-            return []
+        with self._lock:
+            if self._metas is not None:
+                return self._metas
 
-        metas = []
-        for entry in sorted(os.scandir(dir_path), key=lambda e: e.name):
-            if not entry.is_dir():
-                continue
-            skill_md = os.path.join(entry.path, "SKILL.md")
-            if not os.path.isfile(skill_md):
-                continue
-            meta = self._parse_frontmatter(skill_md)
-            if meta:
-                meta.dir_path = entry.path
-                metas.append(meta)
+            dir_path = self.skills_dir
+            if not os.path.isdir(dir_path):
+                logger.warning(f"Skills 目录不存在: {dir_path}")
+                self._metas = []
+                return self._metas
 
-        logger.info(f"技能扫描完成：在 {dir_path} 共发现 {len(metas)} 个技能")
-        return metas
+            metas = []
+            for entry in sorted(os.scandir(dir_path), key=lambda e: e.name):
+                if not entry.is_dir():
+                    continue
+                skill_md = os.path.join(entry.path, "SKILL.md")
+                if not os.path.isfile(skill_md):
+                    continue
+                meta = self._parse_frontmatter(skill_md)
+                if meta:
+                    meta.dir_path = entry.path
+                    metas.append(meta)
+
+            self._metas = metas
+            logger.info(f"技能扫描完成：在 {dir_path} 共发现 {len(metas)} 个技能")
+            return self._metas
 
     def load_skill(self, name: str) -> Optional[str]:
-        """加载完整 SKILL.md 内容（Level 2），带缓存
+        """加载完整 SKILL.md 内容（Level 2），内容级缓存
 
         Args:
             name: 技能名称
@@ -78,8 +87,9 @@ class SkillLoader:
         Returns:
             完整的 SKILL.md 文本内容，或 None
         """
-        if name in self._cache:
-            return self._cache[name]
+        with self._lock:
+            if name in self._content_cache:
+                return self._content_cache[name]
 
         file_path = os.path.join(self.skills_dir, name, "SKILL.md")
         if not os.path.isfile(file_path):
@@ -89,7 +99,8 @@ class SkillLoader:
         try:
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-            self._cache[name] = content
+            with self._lock:
+                self._content_cache[name] = content
             logger.info(f"技能已加载: {name} ({len(content)} 字符)")
             return content
         except Exception as e:
@@ -143,6 +154,8 @@ class SkillLoader:
         )
 
 
+# ============ YAML 解析辅助 ============
+
 def _extract_yaml_str(yaml_str: str, key: str) -> Optional[str]:
     """从 YAML 字符串中提取单行字符串值"""
     for line in yaml_str.split("\n"):
@@ -190,6 +203,23 @@ def _extract_yaml_list(yaml_str: str, key: str) -> list:
     return []
 
 
+# ============ 模块级单例 + 便捷函数 ============
+
+_loader: Optional[SkillLoader] = None
+_loader_lock = threading.Lock()
+
+
+def get_loader(skills_dir: str = "skills") -> SkillLoader:
+    """获取 SkillLoader 单例，线程安全"""
+    global _loader
+    if _loader is not None:
+        return _loader
+    with _loader_lock:
+        if _loader is None:
+            _loader = SkillLoader(skills_dir)
+        return _loader
+
+
 def build_skills_catalog(skills_dir: str = "skills") -> str:
     """便捷函数：扫描技能目录，构建可注入 system prompt 的技能目录摘要
 
@@ -199,7 +229,7 @@ def build_skills_catalog(skills_dir: str = "skills") -> str:
     Returns:
         格式化的技能目录字符串，无技能时返回空字符串
     """
-    loader = SkillLoader(skills_dir)
+    loader = get_loader(skills_dir)
     metas = loader.discover()
     if not metas:
         return ""

@@ -64,29 +64,6 @@ class ToolRegistry:
     def __init__(self):
         self._tools: Dict[str, ToolEntry] = {}
         self._lock = threading.RLock()
-        # 事件循环作为成员变量
-        self._tool_loop: Optional[asyncio.AbstractEventLoop] = None
-        self._tool_loop_thread: Optional[threading.Thread] = None
-        self._tool_loop_init_lock = threading.Lock()
-
-    def _get_tool_loop(self) -> asyncio.AbstractEventLoop:
-        """获取实例级别的持久事件循环"""
-        with self._tool_loop_init_lock:
-            if self._tool_loop is None or self._tool_loop.is_closed():
-                self._tool_loop = asyncio.new_event_loop()
-                self._tool_loop_thread = threading.Thread(
-                    target=self._tool_loop.run_forever,
-                    daemon=True,
-                    name=f"tool-event-loop-{id(self)}",
-                )
-                self._tool_loop_thread.start()
-            return self._tool_loop
-
-    def _run_async(self, coro) -> Any:
-        """在同步函数中运行异步协程"""
-        loop = self._get_tool_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result()
 
     def register(
         self,
@@ -162,7 +139,7 @@ class ToolRegistry:
         """绑定工具到 LangChain 模型"""
         return model.bind_tools(self.get_schemas(names))
 
-    def dispatch(self, name: str, args: Dict[str, Any]) -> str:
+    async def dispatch(self, name: str, args: Dict[str, Any]) -> str:
         """执行单个工具调用
 
         Args:
@@ -181,9 +158,9 @@ class ToolRegistry:
         try:
             handler = entry.handler
             if inspect.iscoroutinefunction(handler):
-                observation = self._run_async(handler(**args))
+                observation = await handler(**args)
             else:
-                observation = handler(**args)
+                observation = await asyncio.to_thread(lambda: handler(**args))
             return str(observation)
         except Exception as e:
             logger.error(f"工具 '{name}' 执行失败: {e}", exc_info=True)
