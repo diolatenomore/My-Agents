@@ -10,14 +10,13 @@ from src.utils.common import logger
 def discover_tools():
     """发现并加载所有工具模块"""
     logger.info("开始加载工具模块...")
-    registered_before = len(list_tools())
 
     import src.tools.vfs_tools  # noqa: F401
     import src.tools.skill_tools  # noqa: F401
+    import src.tools.web_tools  # noqa: F401
+    import src.tools.execute_tools  # noqa: F401
 
-    registered_after = len(list_tools())
-    new_count = registered_after - registered_before
-    logger.info(f"工具加载完成：共 {registered_after} 个工具（新增 {new_count} 个）")
+    logger.info(f"工具加载完成：共 {len(list_tools())} 个工具")
 
 
 def list_tools() -> list:
