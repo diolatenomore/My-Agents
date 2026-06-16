@@ -68,7 +68,10 @@ class SkillLoader:
                     continue
                 skill_md = os.path.join(entry.path, "SKILL.md")
                 if not os.path.isfile(skill_md):
-                    continue
+                    # 找不到SKILL.md则尝试找skill.md
+                    skill_md = os.path.join(entry.path, "skill.md")
+                    if not os.path.isfile(skill_md):
+                        continue
                 meta = self._parse_frontmatter(skill_md)
                 if meta:
                     meta.dir_path = entry.path
@@ -93,8 +96,11 @@ class SkillLoader:
 
         file_path = os.path.join(self.skills_dir, name, "SKILL.md")
         if not os.path.isfile(file_path):
-            logger.warning(f"技能文件不存在: {file_path}")
-            return None
+            # 找不到SKILL.md则尝试找skill.md
+            file_path = os.path.join(self.skills_dir, name, "skill.md")
+            if not os.path.isfile(file_path):
+                logger.warning(f"技能文件不存在: {file_path}")
+                return None
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -106,6 +112,58 @@ class SkillLoader:
         except Exception as e:
             logger.error(f"读取技能文件失败: {file_path}, 错误: {e}")
             return None
+
+    def load_skill_resource(self, name: str, resource_path: str) -> Optional[str]:
+        """加载 skill 内的附属文件（Level 3），带路径越界保护
+
+        Args:
+            name: 技能名称
+            resource_path: 资源路径，相对于 skills/<name>/ 目录
+
+        Returns:
+            文件内容，或 None
+        """
+        skill_dir = os.path.join(self.skills_dir, name)
+        if not os.path.isdir(skill_dir):
+            return None
+
+        target = os.path.normpath(os.path.join(skill_dir, resource_path))
+        # 防止 .. 逃逸到 skill 目录外
+        if not target.startswith(os.path.normpath(skill_dir) + os.sep):
+            logger.warning(f"路径越界: {resource_path}")
+            return None
+        if not os.path.isfile(target):
+            return None
+
+        try:
+            with open(target, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.error(f"读取资源文件失败: {target}, 错误: {e}")
+            return None
+
+    def list_skill_dir(self, name: str) -> list[str]:
+        """递归列出 skill 目录下所有文件（相对路径），排除 SKILL.md
+
+        Args:
+            name: 技能名称
+
+        Returns:
+            文件路径列表（相对于 skills/<name>/），按路径排序
+        """
+        skill_dir = os.path.join(self.skills_dir, name)
+        if not os.path.isdir(skill_dir):
+            return []
+
+        files = []
+        for root, _, filenames in os.walk(skill_dir):
+            for fn in filenames:
+                if fn.lower() == "skill.md":
+                    continue
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, skill_dir)
+                files.append(rel)
+        return sorted(files)
 
     @staticmethod
     def _parse_frontmatter(file_path: str) -> Optional[SkillMeta]:
