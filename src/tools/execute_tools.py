@@ -6,27 +6,46 @@
 
 import os
 import subprocess
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from src.tools.registry import registry
+
+# 项目根目录，用于解析相对 cwd（无论进程从哪启动，. 始终 = 项目根）
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+# 确保是目錄
+if not os.path.isdir(_PROJECT_ROOT):
+    raise RuntimeError(f"项目根目录不存在: {_PROJECT_ROOT}")
 
 
 class ExecuteInput(BaseModel):
     command: str = Field(
         description=(
             "要执行的 shell 命令。示例: 'pip install -r requirements.txt'、"
-            "'python scripts/batch_rename.py --help'、'curl -s https://example.com/api'"
+            "'python scripts/feixing.py --help'、'bash scripts/activation.sh'"
         )
     )
     cwd: str = Field(
         default=".",
-        description="命令的工作目录。默认为项目根目录。执行 skill 脚本时，应设为 skills/<skill-name>",
+        description=(
+            "命令的工作目录。执行 skill 脚本时，应设为 skills/<skill-name>，如 'skills/file-organize'"
+        ),
     )
     timeout: int = Field(
         default=60,
-        description="命令超时秒数，默认 60 秒。长时间运行的命令应设置更高",
+        description="命令超时秒数，默认 60 秒",
     )
+
+
+def _resolve_cwd(cwd: str) -> str:
+    """将相对 cwd 解析为绝对路径（相对于项目根目录）"""
+    if os.path.isabs(cwd):
+        return cwd
+    resolved = os.path.normpath(os.path.join(_PROJECT_ROOT, cwd))
+    if not os.path.isdir(resolved):
+        return resolved  # 目录不存在也返回，让 subprocess 报错
+    return resolved
 
 
 def execute(command: str, cwd: str = ".", timeout: int = 60) -> str:
@@ -43,6 +62,8 @@ def execute(command: str, cwd: str = ".", timeout: int = 60) -> str:
     Returns:
         命令的 stdout + stderr 输出（超长截断到 5000 字符）
     """
+    # cwd 的相对路径始终相对于项目根目录解析，不依赖进程的当前工作目录。
+    cwd = _resolve_cwd(cwd)
     try:
         result = subprocess.run(
             command,
