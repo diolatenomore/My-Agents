@@ -33,13 +33,6 @@ class StagingArea:
     def get_staging_path(self, path: str) -> str | None:
         """获取暂存区路径，如果已被删除或不存在则返回 None"""
         if not self.deleted_mapping.get(path, False) and path in self.mapping:
-            # 遍历deleted_dir_mapping，检查path是否在已删除的目录下
-            for dir_path, is_deleted in self.deleted_dir_mapping.items():
-                if is_deleted and path.startswith(dir_path + "/"):
-                    # 如果path在已删除的目录下，将deleted_mapping对应值设为True
-                    self.deleted_mapping[path] = True
-                    return None
-            # 正常返回暂存区路径
             return self.mapping[path]
         return None
 
@@ -169,6 +162,11 @@ class StagingArea:
 
         # 更新缓存中的删除状态
         self.deleted_dir_mapping[path] = True
+
+        # 遍历mapping，将该目录下所有文件标记为已删除
+        for file_path in list(self.mapping.keys()):
+            if file_path.startswith(path + "/"):
+                self.deleted_mapping[file_path] = True
 
         # 遍历deleted_dir_mapping，更新子目录的删除状态
         for dir_path in list(self.deleted_dir_mapping.keys()):

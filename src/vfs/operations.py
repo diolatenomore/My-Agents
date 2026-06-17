@@ -120,13 +120,13 @@ async def create_file(path: str, content: str):
     staging_path = staging_area.get_staging_path(path)
     if staging_path:
         return f"ERROR：命名冲突，文件{path}已存在"
-    elif os.path.exists(path):
+    # 如果文件在暂存区被标记为删除，允许在同路径重新创建
+    if not staging_area.is_deleted(path) and os.path.exists(path):
         return f"ERROR：命名冲突，文件{path}已存在"
 
     # 在暂存区为path分配一条路径
     staging_path = await staging_area.register(path)
 
-    # TODO 实现真实文件写入
     os.makedirs(os.path.dirname(staging_path), exist_ok=True)
     with open(staging_path, "w") as f:
         f.write(content)
@@ -190,7 +190,7 @@ async def rename_file(source_path: str, target_path: str):
     target_staging_path = staging_area.get_staging_path(target_path)
     if target_staging_path:
         return f"ERROR：命名冲突，目标路径{target_path}已存在"
-    elif os.path.exists(target_path):
+    elif not staging_area.is_deleted(target_path) and os.path.exists(target_path):
         return f"ERROR：命名冲突，目标路径{target_path}已存在"
 
     # 检查source_path是否存在
@@ -216,7 +216,7 @@ async def rename_file(source_path: str, target_path: str):
 
     return f"文件{source_path}重命名为{target_path}成功"
 
-
+# TODO 考虑多会话之间的合并冲突
 async def modify_file(path: str, new_str: str, replace: bool, old_str: str = None):
     """
     修改文件内容
@@ -297,7 +297,7 @@ async def copy_file(source_path: str, target_path: str):
     target_staging_path = staging_area.get_staging_path(target_path)
     if target_staging_path:
         return f"ERROR：命名冲突，目标路径{target_path}已存在"
-    elif os.path.exists(target_path):
+    elif not staging_area.is_deleted(target_path) and os.path.exists(target_path):
         return f"ERROR：命名冲突，目标路径{target_path}已存在"
     # 在暂存区为target_path分配一条路径
     await staging_area.register(target_path)
@@ -330,7 +330,7 @@ async def move_file(source_path: str, target_path: str):
     target_staging_path = staging_area.get_staging_path(target_path)
     if target_staging_path:
         return f"ERROR：命名冲突，目标路径{target_path}已存在"
-    elif os.path.exists(target_path):
+    elif not staging_area.is_deleted(target_path) and os.path.exists(target_path):
         return f"ERROR：命名冲突，目标路径{target_path}已存在"
     # 在暂存区为target_path分配一条路径
     await staging_area.register(target_path)
@@ -364,7 +364,7 @@ async def mkdir(path: str):
     source_staging_path = staging_area.get_staging_dir_path(path)
     if source_staging_path:
         return f"ERROR：命名冲突，目录{path}已存在"
-    elif os.path.exists(path):
+    elif not staging_area.is_deleted_dir(path) and os.path.exists(path):
         return f"ERROR：命名冲突，目录{path}已存在"
 
     # 在暂存区为path占位
@@ -429,7 +429,7 @@ async def rename_dir(source_path: str, target_path: str):
     target_staging_path = staging_area.get_staging_dir_path(target_path)
     if target_staging_path:
         return f"ERROR：命名冲突，目标目录{target_path}已存在"
-    elif os.path.exists(target_path):
+    elif not staging_area.is_deleted_dir(target_path) and os.path.exists(target_path):
         return f"ERROR：命名冲突，目标目录{target_path}已存在"
 
     # 检查source_path是否存在 （真实路径/虚拟路径——是否已删除）
@@ -473,7 +473,7 @@ async def copy_dir(source_path: str, target_path: str):
     target_staging_path = staging_area.get_staging_dir_path(target_path)
     if target_staging_path:
         return f"ERROR：命名冲突，目标目录{target_path}已存在"
-    elif os.path.exists(target_path):
+    elif not staging_area.is_deleted_dir(target_path) and os.path.exists(target_path):
         return f"ERROR：命名冲突，目标目录{target_path}已存在"
     # 在暂存区为target_path注册
     await staging_area.register_dir(target_path)
@@ -528,7 +528,7 @@ async def move_dir(source_path: str, target_path: str):
     target_staging_path = staging_area.get_staging_dir_path(target_path)
     if target_staging_path:
         return f"ERROR：命名冲突，目标目录{target_path}已存在"
-    elif os.path.exists(target_path):
+    elif not staging_area.is_deleted_dir(target_path) and os.path.exists(target_path):
         return f"ERROR：命名冲突，目标目录{target_path}已存在"
     # 在暂存区为target_path注册
     await staging_area.register_dir(target_path)
