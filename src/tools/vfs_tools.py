@@ -30,7 +30,11 @@ class RenameFileInput(BaseModel):
 
 class ModifyFileInput(BaseModel):
     path: str = Field(description="要修改的文件的绝对路径")
-    content: str = Field(description="要写入文件的内容")
+    new_str: str = Field(description="要写入文件的内容")
+    replace: bool = Field(description="是否使用 SEARCH/REPLACE 模式。True=增量替换，False=全量覆盖")
+    old_str: str = Field(description="SEARCH/REPLACE 模式下要查找替换的原始内容。仅 replace=True 时使用")
+
+
 
 class CopyFileInput(BaseModel):
     source_path: str = Field(description="要复制的源文件的绝对路径")
@@ -97,7 +101,7 @@ registry.register(
 
 registry.register(
     name="modify_file",
-    description="修改文件内容",
+    description="修改文件内容，支持增量替换和全量覆盖",
     handler=ops.modify_file,
     args_schema=ModifyFileInput,
 )

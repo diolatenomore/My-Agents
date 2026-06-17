@@ -11,9 +11,7 @@ from src.utils.vfs import check_file_path, check_dir_path, isfile, isdir, copy
 只要涉及创建、修改文件/目录，都会放到暂存区
 """
 
-# TODO 有无必要添加事务
-# TODO 写入数据库另开一个协程/线程？全局只把要写的记录给它
-# TODO 在此阶段要加上操作约束，比如不能创建已存在的文件/目录，不能删除不存在的文件/目录、不能再删除之后操作该文件/目录（除非再创建）
+# TODO 后续加上工作目录的概念（传入工作目录路径并拼接？）
 
 async def list_dir(source_path: str):
     """列出目录下的所有文件和子目录"""
@@ -219,8 +217,16 @@ async def rename_file(source_path: str, target_path: str):
     return f"文件{source_path}重命名为{target_path}成功"
 
 
-# TODO 文件修改具体逻辑待实现
-async def modify_file(path: str, content: str):
+async def modify_file(path: str, new_str: str, replace: bool, old_str: str = None):
+    """
+    修改文件内容
+
+    Args:
+        path: 文件路径
+        new_str: 文件内容。replace=False 时为完整新内容；replace=True 时为替换后的新内容
+        replace: 是否使用 SEARCH/REPLACE 模式。True=增量替换，False=全量覆盖
+        old_str: SEARCH/REPLACE 模式下要查找替换的原始内容。仅 replace=True 时使用
+    """
     task_id = get_current_task_id()
 
     # 检查path是否存在
@@ -245,8 +251,27 @@ async def modify_file(path: str, content: str):
     if copy_mapping.need_copied(path):
         await copy_mapping.mark_copied(path)
 
-    # TODO 修改文件内容
-    # modify(staging_path, content)
+    if replace:
+        if old_str is None:
+            return f"ERROR：SEARCH/REPLACE 模式下必须提供 old_str"
+        # SEARCH/REPLACE 模式：在文件中查找 old_str 并替换为 new_str
+        with open(staging_path, "r") as f:
+            file_content = f.read()
+
+        count = file_content.count(old_str)
+        if count == 0:
+            return f"ERROR：未在文件{path}中找到要替换的内容，请检查 old_str 是否正确"
+        if count > 1:
+            return f"ERROR：old_str 在文件{path}中出现了 {count} 次（不唯一），请提供更多上下文以保证唯一匹配"
+
+        new_content = file_content.replace(old_str, new_str)
+        with open(staging_path, "w") as f:
+            f.write(new_content)
+    else:
+        # 全量覆盖模式
+        os.makedirs(os.path.dirname(staging_path), exist_ok=True)
+        with open(staging_path, "w") as f:
+            f.write(new_str)
 
     record = DiffRecord(task_id=task_id, operation_type=OperationType.MODIFY_FILE, source_path=path)
     await DiffTable.operate(record)
