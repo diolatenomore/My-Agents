@@ -199,11 +199,91 @@ def _build_messages(
     system_prompt: str, history: Optional[list], query: str
 ) -> list:
     """构建消息列表"""
+    query = _expand_skill_refs(query)  # skill注入到UserMessage，避免破坏前缀缓存
     messages = [SystemMessage(content=system_prompt)]
     if history:
         messages.extend(history)
     messages.append(HumanMessage(content=query))
     return messages
+
+
+def _expand_skill_refs(query: str) -> str:
+    """解析用户消息中的 /skill:name 指令，以 Hermes 风格注入
+    Skill 正文不包裹任何标签，自然融入上下文。
+    元信息用轻量方括号标注，边界靠自然语言过渡句。
+
+    "/skill:file-organize 帮我整理 D:/work 的文件"
+    →
+    [SYSTEM: 用户调用了 "file-organize" skill，请遵循以下指令]
+
+    <SKILL.md 全文>
+
+    [Skill 目录: skills/file-organize]
+    [附属文件: references/api.md, scripts/tool.py]
+
+    用户指令：帮我整理 D:/work 的文件
+    """
+    import re
+    from src.skills.loader import get_loader
+
+    skill_pattern = re.compile(r'/skill:([a-zA-Z0-9][-a-zA-Z0-9]*)')
+
+    matches = skill_pattern.findall(query)
+    if not matches:
+        return query
+
+    # 去重 + 加载
+    loader = get_loader()
+    seen = set()
+    names_in_order = []
+    contents_by_name = {}
+    files_by_name = {}
+    for name in matches:
+        if name in seen:
+            continue
+        seen.add(name)
+        content = loader.load_skill(name)
+        if content:
+            names_in_order.append(name)
+            contents_by_name[name] = content
+            files_by_name[name] = loader.list_skill_dir(name)
+            logger.info(f"/skill 显式加载: {name}")
+
+    if not names_in_order:
+        return query
+
+    # 构建 Hermes 风格的消息
+    parts = []
+    total = len(names_in_order)
+    for i, name in enumerate(names_in_order, 1):
+        content = contents_by_name[name]
+        files = files_by_name[name]
+
+        if total == 1:
+            parts.append(f'[SYSTEM: 用户调用了 "{name}" skill，请遵循以下指令]')
+        else:
+            parts.append(f'[SYSTEM: 用户调用了 "{name}" skill（第 {i}/{total} 个），请遵循以下指令]')
+
+        parts.append("")
+        parts.append(content)
+
+        # Skill 目录元信息
+        parts.append("")
+        parts.append(f"[Skill 目录: skills/{name}]")
+
+        # 附属文件清单
+        if files:
+            file_list = ", ".join(files)
+            parts.append(f"[附属文件: {file_list}]")
+
+        parts.append("")
+
+    # 用户原始指令
+    remaining = skill_pattern.sub('', query).strip()
+    if remaining:
+        parts.append(f"用户指令：{remaining}")
+
+    return "\n".join(parts).rstrip()
 
 
 async def _execute_loop(model_with_tools, messages, cfg):
