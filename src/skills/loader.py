@@ -6,6 +6,7 @@
 - Level 3: SKILL.md 中引用的额外文件按需加载
 """
 
+import json
 import os
 import threading
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ class SkillLoader:
         self._lock = threading.RLock()
         self._metas: Optional[list[SkillMeta]] = None  # Level 1 缓存
         self._content_cache: dict[str, str] = {}        # Level 2/3 缓存
+        self._disabled: Optional[set[str]] = None        # 禁用列表缓存
 
     @property
     def skills_dir(self) -> str:
@@ -46,11 +48,82 @@ class SkillLoader:
         # 相对路径 → 从项目根目录计算
         return str(Path(__file__).resolve().parent.parent.parent / self._skills_dir)
 
-    def discover(self) -> list[SkillMeta]:
-        """扫描 skills 目录，返回所有技能的元数据（Level 1）
+    @property
+    def config_path(self) -> str:
+        """技能配置文件的路径"""
+        return os.path.join(self.skills_dir, "skills_config.json")
 
-        Returns:
-            SkillMeta 列表，按 name 排序
+    # ---- 配置读写 ----
+
+    def _load_config(self) -> dict:
+        """读取技能配置文件"""
+        path = self.config_path
+        if not os.path.isfile(path):
+            return {"disabled": []}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"技能配置文件读取失败: {e}")
+            return {"disabled": []}
+
+    def _save_config(self, config: dict):
+        """保存技能配置文件"""
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+    def _get_disabled(self) -> set[str]:
+        """获取禁用技能集合（带缓存）"""
+        if self._disabled is None:
+            config = self._load_config()
+            self._disabled = set(config.get("disabled", []))
+        return self._disabled
+
+    def _invalidate_metas(self):
+        """清空元数据缓存（配置变更后调用）"""
+        with self._lock:
+            self._metas = None
+
+    # ---- 启用/禁用 API ----
+
+    def is_disabled(self, name: str) -> bool:
+        """检查技能是否被禁用"""
+        return name in self._get_disabled()
+
+    def disable_skill(self, name: str) -> bool:
+        """禁用一个技能，返回是否成功（已禁用返回 False）"""
+        disabled = self._get_disabled()
+        if name in disabled:
+            return False
+        disabled.add(name)
+        config = self._load_config()
+        config["disabled"] = sorted(disabled)
+        self._save_config(config)
+        self._invalidate_metas()
+        logger.info(f"技能已禁用: {name}")
+        return True
+
+    def enable_skill(self, name: str) -> bool:
+        """启用一个技能，返回是否成功（未被禁用返回 False）"""
+        disabled = self._get_disabled()
+        if name not in disabled:
+            return False
+        disabled.discard(name)
+        config = self._load_config()
+        config["disabled"] = sorted(disabled)
+        self._save_config(config)
+        self._disabled = disabled  # 更新缓存
+        self._invalidate_metas()
+        logger.info(f"技能已启用: {name}")
+        return True
+
+    # ---- 扫描与加载 ----
+
+    def discover(self) -> list[SkillMeta]:
+        """扫描 skills 目录，返回所有已启用的技能元数据（Level 1）
+
+        首次调用时扫描目录并缓存，后续调用直接返回缓存。
+        自动排除 skills_config.json 中 disabled 列表中的技能。
         """
         with self._lock:
             if self._metas is not None:
@@ -62,20 +135,21 @@ class SkillLoader:
                 self._metas = []
                 return self._metas
 
+            disabled = self._get_disabled()
             metas = []
             for entry in sorted(os.scandir(dir_path), key=lambda e: e.name):
                 if not entry.is_dir():
                     continue
-                skill_md = os.path.join(entry.path, "SKILL.md")
-                if not os.path.isfile(skill_md):
-                    # 找不到SKILL.md则尝试找skill.md
-                    skill_md = os.path.join(entry.path, "skill.md")
-                    if not os.path.isfile(skill_md):
-                        continue
-                meta = self._parse_frontmatter(skill_md)
-                if meta:
-                    meta.dir_path = entry.path
-                    metas.append(meta)
+                skill_md = _find_skill_md(entry.path)
+                if not skill_md:
+                    continue
+                meta = _parse_frontmatter(skill_md)
+                if meta is None:
+                    continue
+                if meta.name in disabled:
+                    continue
+                meta.dir_path = entry.path
+                metas.append(meta)
 
             self._metas = metas
             logger.info(f"技能扫描完成：在 {dir_path} 共发现 {len(metas)} 个技能")
@@ -94,13 +168,10 @@ class SkillLoader:
             if name in self._content_cache:
                 return self._content_cache[name]
 
-        file_path = os.path.join(self.skills_dir, name, "SKILL.md")
-        if not os.path.isfile(file_path):
-            # 找不到SKILL.md则尝试找skill.md
-            file_path = os.path.join(self.skills_dir, name, "skill.md")
-            if not os.path.isfile(file_path):
-                logger.warning(f"技能文件不存在: {file_path}")
-                return None
+        file_path = _find_skill_md(os.path.join(self.skills_dir, name))
+        if not file_path:
+            logger.warning(f"技能文件不存在: skills/{name}/{{SKILL.md,skill.md}}")
+            return None
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -165,51 +236,60 @@ class SkillLoader:
                 files.append(rel)
         return sorted(files)
 
-    @staticmethod
-    def _parse_frontmatter(file_path: str) -> Optional[SkillMeta]:
-        """解析 SKILL.md 的 YAML frontmatter，提取元数据
 
-        Args:
-            file_path: SKILL.md 文件路径
+def _find_skill_md(dir_path: str) -> Optional[str]:
+    """在给定目录下查找 SKILL.md（优先大写，兜底小写）"""
+    for fname in ("SKILL.md", "skill.md"):
+        path = os.path.join(dir_path, fname)
+        if os.path.isfile(path):
+            return path
+    return None
 
-        Returns:
-            SkillMeta 或 None
-        """
-        try:
-            with open(file_path, "r", encoding="utf-8") as f:
-                content = f.read()
-        except Exception as e:
-            logger.error(f"读取技能文件失败: {file_path}, 错误: {e}")
-            return None
 
-        # 检查是否以 --- 开头
-        if not content.startswith("---"):
-            logger.warning(f"技能文件缺少 frontmatter: {file_path}")
-            return None
+def _parse_frontmatter(file_path: str) -> Optional[SkillMeta]:
+    """解析 SKILL.md 的 YAML frontmatter，提取元数据
 
-        # 提取两个 --- 之间的 YAML
-        _, rest = content.split("---", 1)
-        if "---" not in rest:
-            logger.warning(f"技能文件 frontmatter 格式不完整: {file_path}")
-            return None
-        frontmatter, _ = rest.split("---", 1)
+    Args:
+        file_path: SKILL.md 文件路径
 
-        # 简易 YAML 解析（不引入 PyYAML 依赖，只解析必要字段）
-        name = _extract_yaml_str(frontmatter, "name")
-        description = _extract_yaml_value(frontmatter, "description")
-        version = _extract_yaml_str(frontmatter, "version") or "1.0.0"
-        tags = _extract_yaml_list(frontmatter, "tags")
+    Returns:
+        SkillMeta 或 None
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception as e:
+        logger.error(f"读取技能文件失败: {file_path}, 错误: {e}")
+        return None
 
-        if not name or not description:
-            logger.warning(f"技能文件缺少必填字段 name/description: {file_path}")
-            return None
+    # 检查是否以 --- 开头
+    if not content.startswith("---"):
+        logger.warning(f"技能文件缺少 frontmatter: {file_path}")
+        return None
 
-        return SkillMeta(
-            name=name,
-            description=description,
-            version=version,
-            tags=tags,
-        )
+    # 提取两个 --- 之间的 YAML
+    _, rest = content.split("---", 1)
+    if "---" not in rest:
+        logger.warning(f"技能文件 frontmatter 格式不完整: {file_path}")
+        return None
+    frontmatter, _ = rest.split("---", 1)
+
+    # 简易 YAML 解析（不引入 PyYAML 依赖，只解析必要字段）
+    name = _extract_yaml_str(frontmatter, "name")
+    description = _extract_yaml_value(frontmatter, "description")
+    version = _extract_yaml_str(frontmatter, "version") or "1.0.0"
+    tags = _extract_yaml_list(frontmatter, "tags")
+
+    if not name or not description:
+        logger.warning(f"技能文件缺少必填字段 name/description: {file_path}")
+        return None
+
+    return SkillMeta(
+        name=name,
+        description=description,
+        version=version,
+        tags=tags,
+    )
 
 
 # ============ YAML 解析辅助 ============
