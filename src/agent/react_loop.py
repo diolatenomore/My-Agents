@@ -44,7 +44,8 @@ async def run_agent(
     """
     cfg = config or AgentConfig()
     tools = tools or registry.get_all_schemas()
-    prompt = _build_system_prompt(system_prompt)
+    memory_block = _get_memory_block(query)
+    prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
 
     messages = _build_messages(prompt, history, query)
 
@@ -102,7 +103,8 @@ async def run_agent_stream(
     """
     cfg = config or AgentConfig()
     tools = tools or registry.get_all_schemas()
-    prompt = _build_system_prompt(system_prompt)
+    memory_block = _get_memory_block(query)
+    prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
 
     messages = _build_messages(prompt, history, query)
 
@@ -333,12 +335,26 @@ async def _execute_loop(model_with_tools, messages, cfg):
     return iterations, total_tool_calls
 
 
-def _build_system_prompt(custom_prompt: Optional[str] = None) -> str:
-    """构建 system prompt：自定义 > 默认 + 技能目录"""
+def _build_system_prompt(
+    custom_prompt: Optional[str] = None,
+    memory_block: str = "",
+) -> str:
+    """构建 system prompt：自定义 > 默认 + 技能目录 + 长期记忆"""
     if custom_prompt:
         return custom_prompt
     prompt = DEFAULT_SYSTEM_PROMPT
     catalog = build_skills_catalog()
     if catalog:
         prompt += "\n\n" + catalog
+    if memory_block:
+        prompt += "\n\n" + memory_block
     return prompt
+
+
+def _get_memory_block(query: str) -> str:
+    """检索长期记忆，返回注入 system prompt 的 markdown 文本"""
+    try:
+        from src.memory.service import get_memory_service
+        return get_memory_service().retrieve(query)
+    except Exception:
+        return ""

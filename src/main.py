@@ -1,5 +1,4 @@
 import json
-import os
 import uuid
 from contextlib import asynccontextmanager
 
@@ -7,6 +6,9 @@ from fastapi import FastAPI, HTTPException, Path, Request
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+import asyncio
+
+from src.session.manager import SessionManager
 from src.db.sqlite_pool import db_pool
 from src.db.init_db import init_db
 from src.utils.common import logger
@@ -17,6 +19,7 @@ from src.models.http_dtos import (
 )
 from src.tools.loader import discover_tools
 from src.agent.react_loop import run_agent, run_agent_stream
+from src.memory.service import get_memory_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -27,7 +30,6 @@ async def lifespan(app: FastAPI):
     discover_tools()
 
     # 初始化会话管理器
-    from src.session.manager import SessionManager
     app.state.session_manager = SessionManager()
 
     try:
@@ -95,6 +97,11 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
 
         await session_manager.save_messages(session_id, result.messages)
 
+        # Fire-and-forget 提取长期记忆
+        asyncio.create_task(
+            get_memory_service().extract_from_messages(session_id, query, result.content)
+        )
+
     return ChatResponse(
         code=200,
         message=result.content,
@@ -135,6 +142,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
     yield f"event: session_ready\ndata: {json.dumps({'type': 'session_ready', 'session_id': session_id}, ensure_ascii=False)}\n\n"
 
     messages: list = []
+    final_content = ""
     try:
         async with session_manager.lock(session_id):
             async for event in run_agent_stream(
@@ -143,6 +151,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
             ):
                 if event["type"] == "done":
                     messages = event.pop("_messages", [])
+                    final_content = event.get("content", "")
                     # 在 done 事件中嵌入审批树
                     from src.vfs.diff_table import DiffTable
                     from src.vfs.review_manager import ReviewManager
@@ -163,6 +172,12 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                 await session_manager.save_messages(session_id, messages)
             except Exception as e:
                 logger.error(f"保存会话消息失败: {e}")
+
+        # Fire-and-forget 提取长期记忆
+        if messages and final_content:
+            asyncio.create_task(
+                get_memory_service().extract_from_messages(session_id, query, final_content)
+            )
 
 
 # ---- VFS 审批接口 ----

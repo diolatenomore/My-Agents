@@ -25,3 +25,9 @@ AGENT_WORKSPACE_PATH = os.path.join(_project_root, "workspace/agent_workspace")
 
 # 暂存区路径配置
 STAGING_AREA_PATH = os.path.join(_project_root, "workspace/staging_area")
+
+# 长期记忆配置
+MEMORY_PERSIST_DIR = os.path.join(_project_root, "workspace/chroma_memory")
+MEMORY_EXTRACTION_ENABLED = True
+MEMORY_RETRIEVAL_ENABLED = True
+MEMORY_MAX_RESULTS = 5
