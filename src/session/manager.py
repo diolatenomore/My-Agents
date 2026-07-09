@@ -4,11 +4,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from langchain_core.messages import BaseMessage, SystemMessage
-
 from src.session.models import (
     Session,
-    message_to_dict,
     filter_history_messages,
 )
 from src.session.store import SessionStore
@@ -43,23 +40,23 @@ class SessionManager:
 
     # ========== 历史消息管理 ==========
 
-    async def load_history(self, session_id: str) -> list[BaseMessage]:
-        """加载会话历史，返回 LangChain 消息列表（供 Agent 注入）"""
+    async def load_history(self, session_id: str) -> list[dict]:
+        """加载会话历史，返回 dict 列表（直接注入 Agent）"""
         msg_dicts = await self.store.get_messages(session_id)
         return filter_history_messages(msg_dicts)
 
-    async def save_messages(self, session_id: str, messages: list[BaseMessage]):
+    async def save_messages(self, session_id: str, messages: list[dict]):
         """保存 Agent 执行完后新增的消息到数据库
 
-        跳过 SystemMessage（每次重建），去重：只保存超出已存储数量的新消息。
+        跳过 role=system 的消息（每次重建，不存储）。
+        去重：只保存超出已存储数量的新消息。
         """
         # 获取当前已存消息数（轻量 COUNT，不加载全部消息内容）
         existing = await self.store.count_messages(session_id)
 
-        # 剔除 SystemMessage（每次重建，不存储），再切出新增部分
-        non_system_msgs = [m for m in messages if not isinstance(m, SystemMessage)]
-        new_msgs = non_system_msgs[existing:]
+        # 剔除 system 消息（每次重建，不存储），再切出新增部分
+        non_system = [m for m in messages if m["role"] != "system"]
+        new_msgs = non_system[existing:]
 
         if new_msgs:
-            new_msg_dicts = [message_to_dict(m) for m in new_msgs]
-            await self.store.append_messages(session_id, new_msg_dicts)
+            await self.store.append_messages(session_id, new_msgs)

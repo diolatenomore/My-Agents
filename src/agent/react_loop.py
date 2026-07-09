@@ -1,10 +1,10 @@
 """ReAct 循环核心 — 单 Agent 自主思考+工具调用循环"""
 
+import json
 from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
 
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
-from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI
 
 from src.agent.agent_config import AgentConfig
 from src.agent.prompts import DEFAULT_SYSTEM_PROMPT
@@ -22,6 +22,89 @@ class AgentResult:
     iterations: int = 0  # 实际迭代次数
     tool_calls_count: int = 0  # 工具调用次数
 
+
+# ========== 消息格式转换 ==========
+
+def _to_openai_messages(messages: list[dict]) -> list[dict]:
+    """将内部消息列表转为 OpenAI API 格式
+
+    内部 dict 与 OpenAI API 格式几乎一致，仅 assistant 消息的 tool_calls 字段不同：
+      内部:   {"id", "name", "args": {dict}}
+      OpenAI: {"id", "type": "function", "function": {"name", "arguments": "{json_str}"}}
+    """
+    result = []
+    for msg in messages:
+        if msg["role"] == "assistant" and msg.get("tool_calls"):
+            result.append({
+                "role": "assistant",
+                "content": msg.get("content", ""),
+                "tool_calls": [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc["args"], ensure_ascii=False),
+                        },
+                    }
+                    for tc in msg["tool_calls"]
+                ],
+            })
+        else:
+            result.append(msg)
+    return result
+
+
+def _from_openai_tool_calls(openai_tool_calls: list) -> list[dict]:
+    """将 OpenAI 非流式响应的 tool_calls 转为内部格式"""
+    result = []
+    for tc in openai_tool_calls or []:
+        func = tc.get("function", {})
+        try:
+            args = json.loads(func.get("arguments", "{}"))
+        except json.JSONDecodeError:
+            args = {}
+        result.append({
+            "id": tc.get("id", ""),
+            "name": func.get("name", ""),
+            "args": args,
+        })
+    return result
+
+
+def _create_client() -> AsyncOpenAI:
+    """创建 AsyncOpenAI 客户端"""
+    return AsyncOpenAI(base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
+
+
+def _build_request_kwargs(cfg: AgentConfig) -> dict:
+    """根据配置构建 chat.completions.create 的所有参数"""
+    extra = {"thinking": {"type": "enabled" if cfg.think else "disabled"}}
+    kwargs: dict = {
+        "model": cfg.model,
+        "temperature": cfg.temperature,
+        "extra_body": extra,
+    }
+    if cfg.reasoning_effort is not None:
+        kwargs["reasoning_effort"] = cfg.reasoning_effort
+    return kwargs
+
+
+# ========== 消息构建 ==========
+
+def _build_messages(
+    system_prompt: str, history: Optional[list], query: str
+) -> list[dict]:
+    """构建消息列表"""
+    query = _expand_skill_refs(query)  # skill注入到UserMessage，避免破坏前缀缓存
+    messages = [{"role": "system", "content": system_prompt}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": query})
+    return messages
+
+
+# ========== Agent 入口 ==========
 
 async def run_agent(
     query: str,
@@ -48,22 +131,15 @@ async def run_agent(
     prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
 
     messages = _build_messages(prompt, history, query)
+    client = _create_client()
 
-    model = ChatOpenAI(
-        model=cfg.model,
-        base_url=DEEPSEEK_BASE_URL,
-        api_key=DEEPSEEK_API_KEY,
-        temperature=cfg.temperature,
-    )
-    model_with_tools = model.bind_tools(tools)
+    iterations, total_tool_calls = await _execute_loop(client, cfg, messages, tools)
 
-    iterations, total_tool_calls = await _execute_loop(model_with_tools, messages, cfg)
-
-    # 取最后一条 AI 消息作为最终回复
+    # 取最后一条 assistant 消息作为最终回复
     final_content = ""
     for msg in reversed(messages):
-        if isinstance(msg, AIMessage) and msg.content:
-            final_content = msg.content
+        if msg["role"] == "assistant" and msg.get("content"):
+            final_content = msg["content"]
             break
 
     return AgentResult(
@@ -84,12 +160,13 @@ async def run_agent_stream(
     """运行 ReAct Agent 循环（流式版本），逐个 yield 事件
 
     事件类型:
-        - token:     LLM 生成的文本片段（如 {"type":"token","content":"你好"}）
-        - tool_call: 模型决定调用工具（如 {"type":"tool_call","name":"list_dir","args":{...}}）
+        - thinking:   模型的思考过程（如 {"type":"thinking","content":"..."}）
+        - token:      LLM 生成的可见文本片段（如 {"type":"token","content":"你好"}）
+        - tool_call:  模型决定调用工具（如 {"type":"tool_call","name":"list_dir","args":{...}}）
         - tool_result: 工具执行结果（如 {"type":"tool_result","name":"list_dir","result":"..."}）
-        - iteration: 开始新一轮迭代（如 {"type":"iteration","num":1}）
-        - done:      全部完成（如 {"type":"done","content":"最终回复"}，含 "_messages" 供调用者持久化）
-        - error:     发生错误（如 {"type":"error","message":"..."}）
+        - iteration:  开始新一轮迭代（如 {"type":"iteration","num":1}）
+        - done:       全部完成（如 {"type":"done","content":"最终回复"}，含 "_messages" 供调用者持久化）
+        - error:      发生错误（如 {"type":"error","message":"..."}）
 
     Args:
         query: 用户输入
@@ -107,60 +184,91 @@ async def run_agent_stream(
     prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
 
     messages = _build_messages(prompt, history, query)
+    client = _create_client()
 
     try:
-        model = ChatOpenAI(
-            model=cfg.model,
-            base_url=DEEPSEEK_BASE_URL,
-            api_key=DEEPSEEK_API_KEY,
-            temperature=cfg.temperature,
-            streaming=True,
-        )
-        model_with_tools = model.bind_tools(tools)
-
         for iteration in range(1, cfg.max_iterations + 1):
-            yield {"type": "iteration", "num": iteration}
 
             if cfg.verbose:
                 logger.info(f"[Agent] 迭代 {iteration}/{cfg.max_iterations}")
 
-            # 收集本次 LLM 回复
-            full_content = ""
-            aggregated = None
-
-            async for chunk in model_with_tools.astream(messages):
-                # AIMessageChunk 支持 += 聚合
-                if aggregated is None:
-                    aggregated = chunk
-                else:
-                    aggregated += chunk
-
-                # 吐出文本 token
-                if chunk.content:
-                    full_content += chunk.content
-                    yield {"type": "token", "content": chunk.content}
-
-            # astream 结束后，aggregated 包含完整响应
-            # 注意：aggregated 是 AIMessageChunk，需转为 AIMessage 确保 tool_calls 正确序列化
-            msg = AIMessage(
-                content=full_content,
-                tool_calls=list(aggregated.tool_calls) if aggregated.tool_calls else [],
+            openai_msgs = _to_openai_messages(messages)
+            stream = await client.chat.completions.create(
+                messages=openai_msgs,
+                tools=tools,
+                stream=True,
+                **_build_request_kwargs(cfg),
             )
+
+            full_content = ""
+            full_reasoning = ""
+            # 工具调用增量聚合: index → {id, name, args_str}
+            tool_call_bufs: dict[int, dict] = {}
+
+            async for chunk in stream:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                if not delta:
+                    continue
+
+                # ---- reasoning_content（思考过程） ----
+                reasoning = getattr(delta, 'reasoning_content', None)
+                if reasoning is None and hasattr(delta, 'model_extra') and delta.model_extra:
+                    reasoning = delta.model_extra.get('reasoning_content', '')
+                if reasoning:
+                    full_reasoning += reasoning
+                    yield {"type": "thinking", "content": reasoning}
+
+                # ---- content（可见文本） ----
+                if delta.content:
+                    full_content += delta.content
+                    yield {"type": "token", "content": delta.content}
+
+                # ---- 聚合 tool_calls 增量 ----
+                if delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tool_call_bufs:
+                            tool_call_bufs[idx] = {"id": "", "name": "", "args_str": ""}
+                        buf = tool_call_bufs[idx]
+                        if tc_delta.id:
+                            buf["id"] = tc_delta.id
+                        if tc_delta.function and tc_delta.function.name:
+                            buf["name"] = tc_delta.function.name
+                        if tc_delta.function and tc_delta.function.arguments:
+                            buf["args_str"] += tc_delta.function.arguments
+
+            # 流结束后构造 tool_calls（内部格式）
+            tool_calls = []
+            for idx in sorted(tool_call_bufs.keys()):
+                buf = tool_call_bufs[idx]
+                try:
+                    args = json.loads(buf["args_str"]) if buf["args_str"] else {}
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append({
+                    "id": buf["id"] or f"call_{buf['name']}",
+                    "name": buf["name"],
+                    "args": args,
+                })
+
+            # 构造 assistant 消息
+            msg: dict = {"role": "assistant", "content": full_content}
+            if full_reasoning:
+                msg["reasoning_content"] = full_reasoning
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
             messages.append(msg)
 
             # 没有工具调用 → 模型完成
-            if not msg.tool_calls:
+            if not tool_calls:
                 yield {"type": "done", "content": full_content, "_messages": messages}
                 return
 
             # 执行工具调用
-            for tool_call in msg.tool_calls:
-                tool_name = tool_call.get("name") if isinstance(tool_call, dict) else tool_call.name
-                tool_args = tool_call.get("args") if isinstance(tool_call, dict) else tool_call.args
-                tool_call_id = tool_call.get("id") if isinstance(tool_call, dict) else tool_call.id
-                # 安全兜底：如果流式返回缺少 id，生成一个
-                if not tool_call_id:
-                    tool_call_id = f"call_{tool_name}"
+            for tc in tool_calls:
+                tool_name = tc["name"]
+                tool_args = tc["args"]
+                tool_call_id = tc["id"]
 
                 yield {"type": "tool_call", "name": tool_name, "args": tool_args}
 
@@ -180,33 +288,123 @@ async def run_agent_stream(
 
                 yield {"type": "tool_result", "name": tool_name, "result": str(observation)}
 
-                messages.append(ToolMessage(
-                    content=str(observation),
-                    tool_call_id=tool_call_id,
-                ))
+                messages.append({
+                    "role": "tool",
+                    "content": str(observation),
+                    "tool_call_id": tool_call_id,
+                })
 
         # 达到最大迭代次数
+        # TODO 还需考虑上下文满了的情况
         summary = f"已达到最大迭代次数 {cfg.max_iterations}，请基于已有信息给出总结。"
-        messages.append(HumanMessage(content=summary))
-        final_response = await model_with_tools.ainvoke(messages)
-        messages.append(final_response)
-        yield {"type": "done", "content": final_response.content or "", "_messages": messages}
+        messages.append({"role": "user", "content": summary})  # TODO 角色为user合适吗？
+        openai_msgs = _to_openai_messages(messages)
+        response = await client.chat.completions.create(
+            messages=openai_msgs,
+            tools=tools,  # TODO 是否不应该传工具
+            **_build_request_kwargs(cfg),
+        )
+        choice = response.choices[0].message
+        final_content = choice.content or ""
+        messages.append({"role": "assistant", "content": final_content})
+        yield {"type": "done", "content": final_content, "_messages": messages}
 
     except Exception as e:
         logger.error(f"[Agent] 流式执行出错: {e}", exc_info=True)
         yield {"type": "error", "message": str(e)}
 
 
-def _build_messages(
-    system_prompt: str, history: Optional[list], query: str
-) -> list:
-    """构建消息列表"""
-    query = _expand_skill_refs(query)  # skill注入到UserMessage，避免破坏前缀缓存
-    messages = [SystemMessage(content=system_prompt)]
-    if history:
-        messages.extend(history)
-    messages.append(HumanMessage(content=query))
-    return messages
+async def _execute_loop(
+    client: AsyncOpenAI, cfg: AgentConfig, messages: list[dict], tools: list,
+) -> tuple[int, int]:
+    """非流式版本的 ReAct 循环执行体"""
+    iterations = 0
+    total_tool_calls = 0
+
+    while iterations < cfg.max_iterations:
+        iterations += 1
+
+        if cfg.verbose:
+            logger.info(f"[Agent] 迭代 {iterations}/{cfg.max_iterations}")
+
+        openai_msgs = _to_openai_messages(messages)
+        response = await client.chat.completions.create(
+            messages=openai_msgs,
+            tools=tools,
+            **_build_request_kwargs(cfg),
+        )
+        choice = response.choices[0].message
+
+        msg = {
+            "role": "assistant",
+            "content": choice.content or "",
+            "tool_calls": _from_openai_tool_calls(choice.tool_calls),
+        }
+        messages.append(msg)
+
+        if not msg["tool_calls"]:
+            if cfg.verbose:
+                logger.info(f"[Agent] 模型完成输出，共 {iterations} 次迭代，{total_tool_calls} 次工具调用")
+            return iterations, total_tool_calls
+
+        for tc in msg["tool_calls"]:
+            total_tool_calls += 1
+            tool_name = tc["name"]
+            tool_args = tc["args"]
+            tool_call_id = tc["id"]
+
+            if cfg.verbose:
+                logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
+
+            observation = await registry.dispatch(tool_name, tool_args)
+
+            if cfg.verbose:
+                logger.info(f"[Agent] 工具返回: {str(observation)[:200]}{'...' if len(str(observation)) > 200 else ''}")
+
+            messages.append({
+                "role": "tool",
+                "content": str(observation),
+                "tool_call_id": tool_call_id,
+            })
+
+    # 达到最大迭代次数
+    summary = f"已达到最大迭代次数 {cfg.max_iterations}，请基于已有信息给出总结。"
+    messages.append({"role": "user", "content": summary})
+    openai_msgs = _to_openai_messages(messages)
+    response = await client.chat.completions.create(
+        messages=openai_msgs,
+        tools=tools,
+        **_build_request_kwargs(cfg),
+    )
+    choice = response.choices[0].message
+    messages.append({"role": "assistant", "content": choice.content or ""})
+
+    return iterations, total_tool_calls
+
+
+def _build_system_prompt(
+    custom_prompt: Optional[str] = None,
+    memory_block: str = "",
+) -> str:
+    """构建 system prompt：自定义 > 默认 + 技能目录 + 长期记忆"""
+    if custom_prompt:
+        return custom_prompt
+    prompt = DEFAULT_SYSTEM_PROMPT
+    catalog = build_skills_catalog()
+    if catalog:
+        prompt += "\n\n" + catalog
+    if memory_block:
+        prompt += "\n\n" + memory_block
+    return prompt
+
+
+def _get_memory_block(query: str) -> str:
+    """检索长期记忆，返回注入 system prompt 的 markdown 文本"""
+    try:
+        from src.memory.service import get_memory_service
+        return get_memory_service().retrieve(query)
+    except Exception:
+        return ""
 
 
 def _expand_skill_refs(query: str) -> str:
@@ -286,75 +484,3 @@ def _expand_skill_refs(query: str) -> str:
         parts.append(f"用户指令：{remaining}")
 
     return "\n".join(parts).rstrip()
-
-
-async def _execute_loop(model_with_tools, messages, cfg):
-    """非流式版本的 ReAct 循环执行体"""
-    iterations = 0
-    total_tool_calls = 0
-
-    while iterations < cfg.max_iterations:
-        iterations += 1
-
-        if cfg.verbose:
-            logger.info(f"[Agent] 迭代 {iterations}/{cfg.max_iterations}")
-
-        response = await model_with_tools.ainvoke(messages)
-        messages.append(response)
-
-        if not response.tool_calls:
-            if cfg.verbose:
-                logger.info(f"[Agent] 模型完成输出，共 {iterations} 次迭代，{total_tool_calls} 次工具调用")
-            return iterations, total_tool_calls
-
-        for tool_call in response.tool_calls:
-            total_tool_calls += 1
-            tool_name = tool_call.get("name") if isinstance(tool_call, dict) else tool_call.name
-            tool_args = tool_call.get("args") if isinstance(tool_call, dict) else tool_call.args
-            tool_call_id = tool_call.get("id") if isinstance(tool_call, dict) else tool_call.id
-
-            if cfg.verbose:
-                logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
-
-            observation = await registry.dispatch(tool_name, tool_args)
-
-            if cfg.verbose:
-                logger.info(f"[Agent] 工具返回: {str(observation)[:200]}{'...' if len(str(observation)) > 200 else ''}")
-
-            messages.append(ToolMessage(
-                content=str(observation),
-                tool_call_id=tool_call_id,
-            ))
-
-    # 达到最大迭代次数
-    summary = f"已达到最大迭代次数 {cfg.max_iterations}，请基于已有信息给出总结。"
-    messages.append(HumanMessage(content=summary))
-    final_response = await model_with_tools.ainvoke(messages)
-    messages.append(final_response)
-
-    return iterations, total_tool_calls
-
-
-def _build_system_prompt(
-    custom_prompt: Optional[str] = None,
-    memory_block: str = "",
-) -> str:
-    """构建 system prompt：自定义 > 默认 + 技能目录 + 长期记忆"""
-    if custom_prompt:
-        return custom_prompt
-    prompt = DEFAULT_SYSTEM_PROMPT
-    catalog = build_skills_catalog()
-    if catalog:
-        prompt += "\n\n" + catalog
-    if memory_block:
-        prompt += "\n\n" + memory_block
-    return prompt
-
-
-def _get_memory_block(query: str) -> str:
-    """检索长期记忆，返回注入 system prompt 的 markdown 文本"""
-    try:
-        from src.memory.service import get_memory_service
-        return get_memory_service().retrieve(query)
-    except Exception:
-        return ""
