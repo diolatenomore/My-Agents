@@ -15,6 +15,7 @@ class ChatResponse(BaseModel):
     message: str
     type: str
     session_id: Optional[str] = None  # 后端返回，前端需保存后续使用
+    review_tree: Optional[dict] = None  # merge 后的审批树，无文件变更时为 None
 
 
 class SessionDTO(BaseModel):
