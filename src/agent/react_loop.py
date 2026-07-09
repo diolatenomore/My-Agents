@@ -1,5 +1,6 @@
 """ReAct 循环核心 — 单 Agent 自主思考+工具调用循环"""
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
@@ -156,6 +157,7 @@ async def run_agent_stream(
     config: Optional[AgentConfig] = None,
     system_prompt: Optional[str] = None,
     tools: Optional[list] = None,
+    cancel_event: Optional[asyncio.Event] = None,
 ) -> AsyncGenerator[dict, None]:
     """运行 ReAct Agent 循环（流式版本），逐个 yield 事件
 
@@ -164,7 +166,7 @@ async def run_agent_stream(
         - token:      LLM 生成的可见文本片段（如 {"type":"token","content":"你好"}）
         - tool_call:  模型决定调用工具（如 {"type":"tool_call","name":"list_dir","args":{...}}）
         - tool_result: 工具执行结果（如 {"type":"tool_result","name":"list_dir","result":"..."}）
-        - iteration:  开始新一轮迭代（如 {"type":"iteration","num":1}）
+        - cancelled:  取消信号（如 {"type":"cancelled","content":"", "_messages": 截断后的消息} ）
         - done:       全部完成（如 {"type":"done","content":"最终回复"}，含 "_messages" 供调用者持久化）
         - error:      发生错误（如 {"type":"error","message":"..."}）
 
@@ -189,6 +191,15 @@ async def run_agent_stream(
     try:
         for iteration in range(1, cfg.max_iterations + 1):
 
+            # 检查点1：每轮迭代开始前检查取消信号
+            if cancel_event and cancel_event.is_set():
+                yield {
+                    "type": "cancelled",
+                    "content": "",
+                    "_messages": messages,
+                }
+                return
+
             if cfg.verbose:
                 logger.info(f"[Agent] 迭代 {iteration}/{cfg.max_iterations}")
 
@@ -204,8 +215,25 @@ async def run_agent_stream(
             full_reasoning = ""
             # 工具调用增量聚合: index → {id, name, args_str}
             tool_call_bufs: dict[int, dict] = {}
+            chunk_count = 0  # 用于取消检查的 chunk 计数
 
             async for chunk in stream:
+                chunk_count += 1
+
+                # 检查点2：每 10 个 chunk 检查一次取消信号
+                if cancel_event and chunk_count % 10 == 0 and cancel_event.is_set():
+                    # 停止流消费，用已累积内容构造部分 assistant 消息
+                    msg = {"role": "assistant", "content": full_content, "cancelled": True}
+                    if full_reasoning:
+                        msg["reasoning_content"] = full_reasoning
+                    messages.append(msg)
+                    yield {
+                        "type": "cancelled",
+                        "content": full_content,
+                        "_messages": messages,
+                    }
+                    return
+
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if not delta:
                     continue
@@ -269,6 +297,26 @@ async def run_agent_stream(
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_call_id = tc["id"]
+
+                # 检查点3：工具执行前检查取消信号
+                if cancel_event and cancel_event.is_set():
+                    # 为剩余未执行的工具调用生成假错误返回
+                    remaining = tool_calls[tool_calls.index(tc):]
+                    for remaining_tc in remaining:
+                        yield {"type": "tool_call", "name": remaining_tc["name"], "args": remaining_tc["args"]}
+                        error_result = "工具调用被用户中断"
+                        yield {"type": "tool_result", "name": remaining_tc["name"], "result": error_result}
+                        messages.append({
+                            "role": "tool",
+                            "content": error_result,
+                            "tool_call_id": remaining_tc["id"],
+                        })
+                    yield {
+                        "type": "cancelled",
+                        "content": full_content,
+                        "_messages": messages,
+                    }
+                    return
 
                 yield {"type": "tool_call", "name": tool_name, "args": tool_args}
 

@@ -101,6 +101,7 @@
   <div class="input-area">
     <textarea id="input" rows="2" placeholder="输入消息..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"></textarea>
     <button id="sendBtn" onclick="send()">发送</button>
+    <button id="stopBtn" onclick="stopStreaming()" style="display:none; background:#d32f2f;">停止</button>
   </div>
 
   <div id="reviewPanel" class="review-panel"></div>
@@ -111,6 +112,7 @@
 let currentSessionId = localStorage.getItem('session_id') || '';
 let isStreaming = false;
 let eventSource = null;
+let abortController = null;
 
 // ============ DOM 引用 ============
 const sessionListEl = document.getElementById('sessionList');
@@ -118,6 +120,7 @@ const sessionIdEl = document.getElementById('sessionId');
 const messagesEl = document.getElementById('messages');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
+const stopBtn = document.getElementById('stopBtn');
 
 // ============ Session 管理 ============
 
@@ -271,15 +274,19 @@ async function send() {
 
   isStreaming = true;
   sendBtn.disabled = true;
+  sendBtn.style.display = 'none';
+  stopBtn.style.display = 'inline-block';
   label.innerHTML = '正在输出...<span class="token-cursor"></span>';
   let fullContent = '';
   let thinkingDetails = null;  // 思考过程 DOM 元素
 
   try {
+    abortController = new AbortController();
     const response = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: abortController.signal,
     });
 
     const reader = response.body.getReader();
@@ -332,6 +339,8 @@ async function send() {
           case 'token':
             // 收到第一个可见 token 时折叠思考区（思考结束，开始输出正式回复）
             if (thinkingDetails) thinkingDetails.open = false;
+            // 恢复流式输出标签（可能被 tool_call/tool_result/iteration 覆盖了）
+            label.innerHTML = '正在输出...<span class="token-cursor"></span>';
             fullContent += parsed.content;
             contentDiv.textContent = fullContent;
             scrollBottom();
@@ -353,11 +362,9 @@ async function send() {
             const resultStr = typeof parsed.result === 'string' ? parsed.result.slice(0, 500) : JSON.stringify(parsed.result).slice(0, 500);
             trDiv.innerHTML = `<div class="label">${escapeHtml(parsed.name)} 返回</div><div class="content">${escapeHtml(resultStr)}${resultStr.length >= 500 ? '...' : ''}</div>`;
             messagesEl.insertBefore(trDiv, assistantDiv);
+            // 立刻将标签切换为思考中，避免停留在"工具返回"状态
+            label.textContent = '思考中...';
             scrollBottom();
-            break;
-
-          case 'iteration':
-            label.textContent = `🔄 迭代 ${parsed.num}`;
             break;
 
           case 'done':
@@ -374,6 +381,19 @@ async function send() {
             refreshSessions();
             break;
 
+          case 'cancelled':
+            label.textContent = '⏹ 已中断';
+            if (parsed.content) {
+              fullContent = parsed.content;
+              contentDiv.textContent = fullContent;
+            }
+            // 移除光标
+            const cursors2 = document.querySelectorAll('.token-cursor');
+            cursors2.forEach(c => c.remove());
+            scrollBottom();
+            refreshSessions();
+            break;
+
           case 'error':
             label.textContent = '❌ 错误';
             contentDiv.textContent = parsed.message;
@@ -382,12 +402,33 @@ async function send() {
       }
     }
   } catch (err) {
-    label.textContent = '❌ 连接错误';
-    contentDiv.textContent = err.message;
+    if (err.name === 'AbortError') {
+      // 用户主动中断（fallback），不显示错误
+      label.textContent = '⏹ 已中断';
+      const cursors3 = document.querySelectorAll('.token-cursor');
+      cursors3.forEach(c => c.remove());
+    } else {
+      label.textContent = '❌ 连接错误';
+      contentDiv.textContent = err.message;
+    }
   } finally {
     isStreaming = false;
     sendBtn.disabled = false;
+    sendBtn.style.display = '';
+    stopBtn.style.display = 'none';
+    abortController = null;
     scrollBottom();
+  }
+}
+
+async function stopStreaming() {
+  if (!isStreaming) return;
+
+  // 通知后端取消（不主动 abort SSE，让后端自然终止并返回 cancelled 事件）
+  if (currentSessionId) {
+    try {
+      await fetch(`/api/chat/cancel/${currentSessionId}`, { method: 'POST' });
+    } catch {}
   }
 }
 

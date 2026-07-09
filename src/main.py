@@ -19,6 +19,7 @@ from src.models.http_dtos import (
 )
 from src.tools.loader import discover_tools
 from src.agent.react_loop import run_agent, run_agent_stream
+from src.agent.cancel import CancelRegistry
 from src.memory.service import get_memory_service
 
 @asynccontextmanager
@@ -31,6 +32,9 @@ async def lifespan(app: FastAPI):
 
     # 初始化会话管理器
     app.state.session_manager = SessionManager()
+
+    # 初始化取消注册表
+    app.state.cancel_registry = CancelRegistry()
 
     try:
         yield
@@ -138,6 +142,10 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
     await init_vfs(session_id)
     history = await session_manager.load_history(session_id)
 
+    # 注册取消事件
+    cancel_registry = app.state.cancel_registry
+    cancel_event = cancel_registry.create(session_id)
+
     # 提前通知前端 session_id
     yield f"event: session_ready\ndata: {json.dumps({'type': 'session_ready', 'session_id': session_id}, ensure_ascii=False)}\n\n"
 
@@ -148,8 +156,13 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
             async for event in run_agent_stream(
                 query,
                 history=history,
+                cancel_event=cancel_event,
             ):
-                if event["type"] == "done":
+                # TODO 考虑中断之后vfs的处理
+                if event["type"] == "cancelled":
+                    messages = event.pop("_messages", [])
+                    final_content = event.get("content", "")
+                elif event["type"] == "done":
                     messages = event.pop("_messages", [])
                     final_content = event.get("content", "")
                     # 在 done 事件中嵌入审批树
@@ -159,12 +172,15 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                         review_tree = await ReviewManager.build_review_tree(session_id)
                         if review_tree:
                             event["review_tree"] = review_tree
+                # TODO 貌似每次都返回完整messages？是否可以优化
                 yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     except Exception as e:
         logger.error(f"流式输出出错: {e}")
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
     finally:
+        # TODO yield done之后还会执行finally吗
+        cancel_registry.clear(session_id)
         await clean_vfs()
         clean_current_task_id()
         if messages:
@@ -178,6 +194,15 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
             asyncio.create_task(
                 get_memory_service().extract_from_messages(session_id, query, final_content)
             )
+
+
+# ---- 取消流式对话 ----
+
+@app.post('/api/chat/cancel/{session_id}')
+async def cancel_chat(session_id: str = Path(...)):
+    """取消正在进行的流式对话"""
+    app.state.cancel_registry.request_cancel(session_id)
+    return JSONResponse(content={"code": 200, "message": "已发送取消信号"})
 
 
 # ---- VFS 审批接口 ----
