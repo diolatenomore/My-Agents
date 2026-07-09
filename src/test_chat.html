@@ -43,8 +43,11 @@
   button.danger:hover { background: #b71c1c; }
   .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: #999; font-size: 14px; }
   pre.json { font-size: 12px; background: #f5f5f5; padding: 8px; border-radius: 4px; overflow-x: auto; max-height: 200px; }
-  .review-panel { margin: 12px 20px; background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; display: none; max-height: 50vh; display: none; flex-direction: column; }
+  .review-panel { margin: 0 20px 12px; background: #fff; border: 1px solid #e0e0e0; border-radius: 0 0 8px 8px; overflow: hidden; display: none; flex-direction: column; }
   .review-panel.show { display: flex; }
+  .review-resize-bar { height: 6px; background: #e0e0e0; cursor: ns-resize; flex-shrink: 0; transition: background 0.15s; }
+  .review-resize-bar:hover { background: #1976d2; }
+  .review-resize-bar:active { background: #1565c0; }
   .review-panel .title { padding: 10px 14px; font-size: 14px; font-weight: 600; background: #fafafa; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .review-panel .body { flex: 1; overflow-y: auto; }
   .review-panel .title .badge { background: #1976d2; color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px; }
@@ -173,8 +176,65 @@ async function loadSessionMessages(sid) {
     messagesEl.innerHTML = '<div class="empty-state">会话为空</div>';
     return;
   }
-  for (const m of data.messages) {
-    appendMessage(m.role, m.content);
+  for (let i = 0; i < data.messages.length; i++) {
+    const m = data.messages[i];
+    // 跳过 system 消息（不显示）
+    if (m.role === 'system') continue;
+
+    // user 消息
+    if (m.role === 'user') {
+      appendMessage('user', m.content);
+      continue;
+    }
+
+    // assistant 消息：可能包含思考过程、工具调用、最终输出
+    if (m.role === 'assistant') {
+      // 1. 思考过程（如果有）
+      if (m.reasoning_content) {
+        const thinkingDiv = document.createElement('details');
+        thinkingDiv.className = 'msg thinking';
+        thinkingDiv.innerHTML = `<summary>思考过程</summary><div class="content">${escapeHtml(m.reasoning_content)}</div>`;
+        messagesEl.appendChild(thinkingDiv);
+      }
+
+      // 2. 工具调用（如果有）—— 与后续 tool 消息配对渲染
+      if (m.tool_calls && m.tool_calls.length > 0) {
+        // 向前查找配对的 tool 消息，建立 tool_call_id → result 映射
+        const resultMap = {};
+        let j = i + 1;
+        while (j < data.messages.length && data.messages[j].role === 'tool') {
+          const tid = data.messages[j].tool_call_id;
+          if (tid) {
+            resultMap[tid] = data.messages[j].content;
+          }
+          j++;
+        }
+        // 交替渲染：每个工具调用紧跟其返回结果
+        for (const tc of m.tool_calls) {
+          const tcDiv = document.createElement('div');
+          tcDiv.className = 'msg tool-call';
+          tcDiv.innerHTML = `<div class="label">工具调用</div><div class="content">${escapeHtml(tc.name)}(${escapeHtml(JSON.stringify(tc.args))})</div>`;
+          messagesEl.appendChild(tcDiv);
+
+          const result = resultMap[tc.id];
+          if (result != null) {
+            const trDiv = document.createElement('div');
+            trDiv.className = 'msg tool-result';
+            const resultStr = typeof result === 'string' ? result.slice(0, 500) : JSON.stringify(result).slice(0, 500);
+            trDiv.innerHTML = `<div class="label">${escapeHtml(tc.name)} 返回</div><div class="content">${escapeHtml(resultStr)}${resultStr.length >= 500 ? '...' : ''}</div>`;
+            messagesEl.appendChild(trDiv);
+          }
+        }
+        // 跳过已处理的 tool 消息
+        i = j - 1;
+      }
+
+      // 3. 最终输出（如果有）
+      if (m.content) {
+        appendMessage('assistant', m.content);
+      }
+      continue;
+    }
   }
   scrollBottom();
 }
@@ -213,6 +273,7 @@ async function send() {
   sendBtn.disabled = true;
   label.innerHTML = '正在输出...<span class="token-cursor"></span>';
   let fullContent = '';
+  let thinkingDetails = null;  // 思考过程 DOM 元素
 
   try {
     const response = await fetch('/api/chat/stream', {
@@ -255,7 +316,22 @@ async function send() {
             refreshSessions();
             break;
 
+          case 'thinking':
+            if (!thinkingDetails) {
+              thinkingDetails = document.createElement('details');
+              thinkingDetails.className = 'msg thinking';
+              thinkingDetails.innerHTML = '<summary>思考过程</summary><div class="thinking-content"></div>';
+              // 插入到 assistantDiv 之前，保持正确顺序
+              messagesEl.insertBefore(thinkingDetails, assistantDiv);
+            }
+            thinkingDetails.querySelector('.thinking-content').textContent += parsed.content;
+            thinkingDetails.open = true;
+            scrollBottom();
+            break;
+
           case 'token':
+            // 收到第一个可见 token 时折叠思考区（思考结束，开始输出正式回复）
+            if (thinkingDetails) thinkingDetails.open = false;
             fullContent += parsed.content;
             contentDiv.textContent = fullContent;
             scrollBottom();
@@ -266,7 +342,7 @@ async function send() {
             const tcDiv = document.createElement('div');
             tcDiv.className = 'msg tool-call';
             tcDiv.innerHTML = `<div class="label">工具调用</div><div class="content">${escapeHtml(parsed.name)}(${escapeHtml(JSON.stringify(parsed.args))})</div>`;
-            messagesEl.appendChild(tcDiv);
+            messagesEl.insertBefore(tcDiv, assistantDiv);
             scrollBottom();
             break;
 
@@ -276,7 +352,7 @@ async function send() {
             trDiv.className = 'msg tool-result';
             const resultStr = typeof parsed.result === 'string' ? parsed.result.slice(0, 500) : JSON.stringify(parsed.result).slice(0, 500);
             trDiv.innerHTML = `<div class="label">${escapeHtml(parsed.name)} 返回</div><div class="content">${escapeHtml(resultStr)}${resultStr.length >= 500 ? '...' : ''}</div>`;
-            messagesEl.appendChild(trDiv);
+            messagesEl.insertBefore(trDiv, assistantDiv);
             scrollBottom();
             break;
 
@@ -368,7 +444,8 @@ const OP_LABELS = {
 function renderReviewTree(review) {
   const panel = document.getElementById('reviewPanel');
   const taskId = review.task_id || currentSessionId;
-  let html = `<div class="title">
+  let html = `<div class="review-resize-bar" onmousedown="startReviewDrag(event)"></div>
+  <div class="title">
     <span>📋 文件变更审批</span>
     <span class="badge">${review.items.length} 项</span>
     <div class="actions">
@@ -384,6 +461,38 @@ function renderReviewTree(review) {
   html += '</div>';
   panel.innerHTML = html;
   panel.classList.add('show');
+}
+
+// ============ 审批面板拖拽调整大小 ============
+
+let reviewDragState = null;
+
+function startReviewDrag(e) {
+  const panel = document.getElementById('reviewPanel');
+  reviewDragState = {
+    startY: e.clientY,
+    startHeight: panel.offsetHeight,
+  };
+  document.addEventListener('mousemove', onReviewDrag);
+  document.addEventListener('mouseup', stopReviewDrag);
+  e.preventDefault();
+}
+
+function onReviewDrag(e) {
+  if (!reviewDragState) return;
+  const panel = document.getElementById('reviewPanel');
+  const dy = reviewDragState.startY - e.clientY; // 向上拖为正值
+  const newHeight = reviewDragState.startHeight + dy;
+  // 限制最小高度为标题栏+一点内容，最大为视口80%
+  const minH = 80;
+  const maxH = window.innerHeight * 0.8;
+  panel.style.height = Math.max(minH, Math.min(newHeight, maxH)) + 'px';
+}
+
+function stopReviewDrag() {
+  reviewDragState = null;
+  document.removeEventListener('mousemove', onReviewDrag);
+  document.removeEventListener('mouseup', stopReviewDrag);
 }
 
 function renderReviewItem(item, depth) {
