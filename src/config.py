@@ -31,3 +31,6 @@ MEMORY_PERSIST_DIR = os.path.join(_project_root, "workspace/chroma_memory")
 MEMORY_EXTRACTION_ENABLED = True
 MEMORY_RETRIEVAL_ENABLED = True
 MEMORY_MAX_RESULTS = 5
+# 记忆写入前的语义去重阈值（余弦距离，越小越相似）
+# 新记忆与已有同类型记忆的余弦距离 <= 此阈值时，跳过写入
+MEMORY_DEDUP_THRESHOLD = 0.2

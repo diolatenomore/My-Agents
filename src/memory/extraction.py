@@ -3,12 +3,12 @@
 import json
 import re
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from openai import AsyncOpenAI
 
 from src.config import DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
 from src.utils.common import logger
 
+# 第一层语义去重
 EXTRACTION_PROMPT = """你是一个记忆提取系统。从以下对话中提取关于用户的长期有用信息。
 
 返回一个 JSON 数组，每个元素包含：
@@ -24,7 +24,9 @@ EXTRACTION_PROMPT = """你是一个记忆提取系统。从以下对话中提取
 
 规则：
 - 只提取明确陈述的信息，不推测
+- 如果助手回复中的信息明显是对用户已有记忆的复述/确认（如用户问"我是谁"，助手回答"你是xxx"），**不要提取**，因为这条记忆已存在。
 - 没有可提取的内容则返回空数组 []
+- 如果用户只是询问/确认已有信息，返回空数组 []
 - value 不超过 100 字，必须独立可理解（不依赖上下文）
 - preference 必须有明确的 key 字段
 - 忽略临时性、一次性的信息（如 "帮我查一下天气"）
@@ -59,17 +61,16 @@ async def extract_memories(query: str, response: str) -> list[dict]:
     prompt = EXTRACTION_PROMPT.format(query=query, response=response)
     # TODO 添加retry重试机制，重新抛给llm（限制输出pydantic模型格式？）
     try:
-        model = ChatOpenAI(
+        client = AsyncOpenAI(base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
+        result = await client.chat.completions.create(
             model="deepseek-v4-flash",
-            base_url=DEEPSEEK_BASE_URL,
-            api_key=DEEPSEEK_API_KEY,
+            messages=[
+                {"role": "system", "content": "只返回 JSON 数组，不返回其他内容。"},
+                {"role": "user", "content": prompt},
+            ],
             temperature=0.0,
         )
-        result = await model.ainvoke([
-            SystemMessage(content="只返回 JSON 数组，不返回其他内容。"),
-            HumanMessage(content=prompt),
-        ])
-        return _parse_json(result.content)
+        return _parse_json(result.choices[0].message.content)
     except Exception as e:
         logger.warning(f"记忆提取 LLM 调用失败: {e}")
         return []

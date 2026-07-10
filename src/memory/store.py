@@ -29,8 +29,8 @@ class MemoryStore:
     def add(self, items: list[MemoryItem], session_id: str) -> int:
         """批量添加记忆。
 
-        preference 类型按 key 做 upsert（同 key 删旧插新）。
-        fact/identity 类型始终追加。
+        所有类型统一用向量相似度去重：写入前先查询同类型已有记忆，
+        若余弦距离 <= 阈值则跳过，避免重复写入。
 
         Returns:
             实际新增的记忆数
@@ -38,15 +38,22 @@ class MemoryStore:
         if not items:
             return 0
 
+        from src.config import MEMORY_DEDUP_THRESHOLD
+
         ids: list[str] = []
         documents: list[str] = []
         metadatas: list[dict] = []
         now = datetime.now(timezone.utc).isoformat()
 
         for item in items:
-            # preference 类型做 upsert：先删旧，再插新
-            if item.memory_type == "preference" and item.key:
-                self._delete_by_key(item.key)
+            # 第二层防护：统一用相似度去重，对所有类型都做检查
+            similar = self._find_similar(item.value, item.memory_type)
+            if similar and similar["distance"] <= MEMORY_DEDUP_THRESHOLD:
+                logger.debug(
+                    f"跳过重复记忆 [{item.memory_type}]: {item.value[:50]}... "
+                    f"(已有记忆距离={similar['distance']:.4f}: {similar['value'][:50]}...)"
+                )
+                continue
 
             doc_id = str(uuid.uuid4())
             ids.append(doc_id)
@@ -58,8 +65,10 @@ class MemoryStore:
                 "created_at": now,
             })
 
+        if not ids:
+            return 0
+
         self.collection.add(ids=ids, documents=documents, metadatas=metadatas)
-        logger.debug(f"MemoryStore: 添加 {len(ids)} 条记忆 (session={session_id[:8]}...)")
         return len(ids)
 
     def query(self, text: str, n_results: int = 5) -> list[dict]:
@@ -219,16 +228,27 @@ class MemoryStore:
 
     # ---- 内部方法 ----
 
-    def _delete_by_key(self, key: str) -> None:
-        """删除指定 key 的 preference 记忆（用于 upsert）"""
+    def _find_similar(self, text: str, memory_type: str) -> dict | None:
+        """查询与给定文本最相似的同类型已有记忆。
+
+        Returns:
+            {"id": ..., "value": ..., "distance": ...} 或 None（无结果/异常）
+        """
         try:
-            existing = self.collection.get(
-                where={"$and": [
-                    {"memory_type": "preference"},
-                    {"key": key},
-                ]},
+            results = self.collection.query(
+                query_texts=[text],
+                n_results=3,
+                where={"memory_type": memory_type},
+                include=["documents", "distances"],
             )
-            if existing and existing["ids"]:
-                self.collection.delete(ids=existing["ids"])
+            if results["ids"] and results["ids"][0]:
+                return {
+                    "id": results["ids"][0][0],
+                    "value": results["documents"][0][0],
+                    "distance": results["distances"][0][0],
+                }
         except Exception:
-            pass  # 没有旧记录或 collection 为空，忽略
+            pass
+        return None
+
+

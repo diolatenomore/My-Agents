@@ -16,6 +16,7 @@ from src.models.http_dtos import (
     ChatRequest, ChatResponse, SessionDTO,
     GetTaskStatusResponse, TaskChangeResponse,
     UpdateTaskPriorityRequest, GetStatsResponse, TaskManagerStatus,
+    MemoryItemDTO, UpdateMemoryRequest,
 )
 from src.tools.loader import discover_tools
 from src.agent.react_loop import run_agent, run_agent_stream
@@ -172,14 +173,12 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                         review_tree = await ReviewManager.build_review_tree(session_id)
                         if review_tree:
                             event["review_tree"] = review_tree
-                # TODO 貌似每次都返回完整messages？是否可以优化
                 yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     except Exception as e:
         logger.error(f"流式输出出错: {e}")
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
     finally:
-        # TODO yield done之后还会执行finally吗
         cancel_registry.clear(session_id)
         await clean_vfs()
         clean_current_task_id()
@@ -190,6 +189,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                 logger.error(f"保存会话消息失败: {e}")
 
         # Fire-and-forget 提取长期记忆
+        # TODO 提取的触发频率，目前是每次对话结束
         if messages and final_content:
             asyncio.create_task(
                 get_memory_service().extract_from_messages(session_id, query, final_content)
@@ -371,6 +371,50 @@ async def get_session_messages(session_id: str = Path(...)):
     return JSONResponse(content={
         "session_id": session_id,
         "messages": messages,
+    })
+
+
+# ========== 记忆管理 API ==========
+
+@app.get('/api/memories')
+async def list_memories(limit: int = 20, offset: int = 0, memory_type: str | None = None):
+    """分页列出记忆"""
+    items, total = get_memory_service().list_memories(limit, offset, memory_type)
+    return JSONResponse(content={
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    })
+
+
+@app.delete('/api/memories/{memory_id}')
+async def delete_memory(memory_id: str = Path(...)):
+    """删除单条记忆"""
+    ok = get_memory_service().store.delete(memory_id)
+    if ok:
+        return JSONResponse(content={"code": 200, "message": "已删除"})
+    return JSONResponse(content={"code": 404, "message": "记忆不存在"}, status_code=404)
+
+
+@app.put('/api/memories/{memory_id}')
+async def update_memory(req: UpdateMemoryRequest, memory_id: str = Path(...)):
+    """更新记忆"""
+    ok = get_memory_service().update_memory(memory_id, req.value, req.key)
+    if ok:
+        return JSONResponse(content={"code": 200, "message": "已更新"})
+    return JSONResponse(content={"code": 404, "message": "记忆不存在"}, status_code=404)
+
+
+@app.get('/api/memories/stats')
+async def count_memories():
+    """获取记忆统计"""
+    total = get_memory_service().store.count()
+    prefs = len(get_memory_service().store.get_preferences())
+    return JSONResponse(content={
+        "total": total,
+        "preferences": prefs,
+        "facts_identity": total - prefs,
     })
 
 
