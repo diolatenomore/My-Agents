@@ -74,12 +74,44 @@
   .review-item .item-app:hover { background: #c8e6c9; }
   .review-item .item-rej { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
   .review-item .item-rej:hover { background: #ffcdd2; }
+
+  /* 侧边栏 tab 按钮 */
+  .sidebar-tabs { display: flex; flex-direction: column; border-bottom: 1px solid #eee; }
+  .sidebar-tabs button { flex: 1; padding: 10px 0; font-size: 13px; border: none; background: none; color: #666; cursor: pointer; border-radius: 0; border-bottom: 2px solid transparent; }
+  .sidebar-tabs button:hover { background: #f5f5f5; color: #333; }
+  .sidebar-tabs button.active { color: #1976d2; border-bottom-color: #1976d2; font-weight: 600; }
+
+  /* 记忆管理页面 */
+  .memory-page { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .memory-page .mem-toolbar { padding: 12px 20px; background: #fff; border-bottom: 1px solid #ddd; display: flex; gap: 10px; align-items: center; }
+  .memory-page .mem-toolbar select { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; outline: none; }
+  .memory-page .mem-toolbar .mem-count { font-size: 13px; color: #666; margin-left: auto; }
+  .memory-page .mem-list { flex: 1; overflow-y: auto; }
+  .memory-page .mem-pagination { padding: 10px 20px; background: #fff; border-top: 1px solid #ddd; display: flex; align-items: center; justify-content: space-between; }
+  .memory-page .mem-pagination span { font-size: 13px; color: #666; }
+  .memory-page .mem-pagination button { padding: 6px 16px; font-size: 12px; }
+  .mem-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 20px; border-bottom: 1px solid #f5f5f5; }
+  .mem-row:hover { background: #fafafa; }
+  .mem-type-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; white-space: nowrap; font-weight: 500; flex-shrink: 0; }
+  .mem-type-badge.preference { background: #e3f2fd; color: #1565c0; }
+  .mem-type-badge.fact { background: #e8f5e9; color: #2e7d32; }
+  .mem-type-badge.identity { background: #fff3e0; color: #e65100; }
+  .mem-content { flex: 1; font-size: 13px; line-height: 1.5; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .mem-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .mem-actions button { padding: 4px 12px; font-size: 11px; border-radius: 4px; }
+  .mem-actions button.edit-btn { background: #f5f5f5; color: #333; }
+  .mem-actions button.edit-btn:hover { background: #e0e0e0; }
+  .mem-actions button.del-btn { background: #ffebee; color: #c62828; }
+  .mem-actions button.del-btn:hover { background: #ffcdd2; }
 </style>
 </head>
 <body>
 
 <div class="sidebar">
-  <h2>会话列表</h2>
+  <div class="sidebar-tabs">
+    <button id="tabMemory" onclick="showMemoryPage()">记忆</button>
+    <button class="active" id="tabChat" onclick="showChatPage()">会话</button>
+  </div>
   <div class="session-list" id="sessionList"></div>
   <div class="sidebar-actions">
     <button id="refreshSessions">刷新</button>
@@ -105,6 +137,29 @@
   </div>
 
   <div id="reviewPanel" class="review-panel"></div>
+  <div class="memory-page" id="memoryPage" style="display:none;">
+    <div class="mem-toolbar">
+      <span style="font-weight:600;font-size:14px;">记忆管理</span>
+      <select id="memTypeFilter" onchange="loadMemories()">
+        <option value="">全部类型</option>
+        <option value="preference">偏好 (preference)</option>
+        <option value="fact">事实 (fact)</option>
+        <option value="identity">身份 (identity)</option>
+      </select>
+      <button onclick="loadMemories()" style="padding:6px 16px;font-size:12px;">刷新</button>
+      <span class="mem-count" id="memCount">0 条</span>
+    </div>
+    <div class="mem-list" id="memoryList">
+      <div class="empty-state">加载中...</div>
+    </div>
+    <div class="mem-pagination">
+      <span id="memPageInfo">第 1 页</span>
+      <div style="display:flex;gap:8px;">
+        <button id="memPrevBtn" disabled onclick="prevMemPage()">上一页</button>
+        <button id="memNextBtn" disabled onclick="nextMemPage()">下一页</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -595,6 +650,135 @@ async function processReview(taskId, approved) {
   } catch (err) {
     alert('网络错误: ' + err.message);
   }
+}
+
+// ============ 记忆管理 ============
+
+const memState = { page: 1, limit: 20, total: 0 };
+
+function showChatPage() {
+  // 隐藏记忆页面，显示对话页面
+  document.getElementById('memoryPage').style.display = 'none';
+  document.getElementById('messages').style.display = '';
+  document.querySelector('.input-area').style.display = '';
+  document.querySelector('.header').style.display = '';
+  // 更新 tab 样式
+  document.getElementById('tabChat').classList.add('active');
+  document.getElementById('tabMemory').classList.remove('active');
+}
+
+function showMemoryPage() {
+  if (isStreaming) return;
+  // 隐藏对话页面，显示记忆页面
+  document.getElementById('messages').style.display = 'none';
+  document.querySelector('.input-area').style.display = 'none';
+  document.querySelector('.header').style.display = 'none';
+  document.getElementById('reviewPanel').classList.remove('show');
+  document.getElementById('memoryPage').style.display = 'flex';
+  // 更新 tab 样式
+  document.getElementById('tabChat').classList.remove('active');
+  document.getElementById('tabMemory').classList.add('active');
+  // 重置分页并加载
+  memState.page = 1;
+  document.getElementById('memTypeFilter').value = '';
+  loadMemories();
+}
+
+async function loadMemories() {
+  const type = document.getElementById('memTypeFilter').value;
+  const offset = (memState.page - 1) * memState.limit;
+  let url = `/api/memories?limit=${memState.limit}&offset=${offset}`;
+  if (type) url += `&memory_type=${encodeURIComponent(type)}`;
+
+  const res = await fetch(url);
+  const data = await res.json();
+  memState.total = data.total;
+  renderMemoryList(data);
+}
+
+function renderMemoryList(data) {
+  const listEl = document.getElementById('memoryList');
+  document.getElementById('memCount').textContent = `${data.total} 条`;
+
+  if (!data.items || data.items.length === 0) {
+    listEl.innerHTML = '<div class="empty-state">暂无记忆</div>';
+  } else {
+    listEl.innerHTML = data.items.map(item => {
+      const typeLabels = { preference: '偏好', fact: '事实', identity: '身份' };
+      return `<div class="mem-row">
+        <span class="mem-type-badge ${item.memory_type}">${typeLabels[item.memory_type] || item.memory_type}</span>
+        <span class="mem-content">${escapeHtml(item.value)}</span>
+        <div class="mem-actions">
+          <button class="edit-btn" onclick="editMemory('${item.id}', '${escapeAttr(item.value)}', '${escapeAttr(item.key)}')">编辑</button>
+          <button class="del-btn" onclick="deleteMemory('${item.id}')">删除</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  // 分页按钮状态
+  const totalPages = Math.ceil(memState.total / memState.limit) || 1;
+  document.getElementById('memPageInfo').textContent = `第 ${memState.page} 页 / 共 ${totalPages} 页`;
+  document.getElementById('memPrevBtn').disabled = memState.page <= 1;
+  document.getElementById('memNextBtn').disabled = memState.page >= totalPages;
+}
+
+function prevMemPage() {
+  if (memState.page <= 1) return;
+  memState.page--;
+  loadMemories();
+}
+
+function nextMemPage() {
+  const totalPages = Math.ceil(memState.total / memState.limit) || 1;
+  if (memState.page >= totalPages) return;
+  memState.page++;
+  loadMemories();
+}
+
+async function editMemory(id, value, key) {
+  let newValue = prompt('修改记忆内容:', value);
+  if (newValue === null) return;
+  newValue = newValue.trim();
+  if (!newValue) return;
+
+  let newKey = key;
+  const row = document.querySelector(`.mem-row .edit-btn[onclick*="${id}"]`);
+  if (row) {
+    const badge = row.closest('.mem-row').querySelector('.mem-type-badge');
+    if (badge && badge.classList.contains('preference')) {
+      newKey = prompt('修改 key（如 language, response_style）:', key || '');
+      if (newKey === null) return;
+      newKey = newKey.trim();
+    }
+  }
+
+  const res = await fetch(`/api/memories/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: newValue, key: newKey }),
+  });
+  const data = await res.json();
+  if (data.code === 200) {
+    loadMemories();
+  } else {
+    alert('更新失败: ' + (data.message || '未知错误'));
+  }
+}
+
+async function deleteMemory(id) {
+  if (!confirm('确定删除这条记忆？')) return;
+  const res = await fetch(`/api/memories/${id}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (data.code === 200) {
+    loadMemories();
+  } else {
+    alert('删除失败: ' + (data.message || '未知错误'));
+  }
+}
+
+function escapeAttr(str) {
+  return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
 // ============ 事件绑定 ============

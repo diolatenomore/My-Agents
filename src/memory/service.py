@@ -56,6 +56,15 @@ class MemoryService:
         except Exception as e:
             logger.warning(f"MemoryService 提取失败: {e}")
 
+    def list_memories(self, limit: int = 20, offset: int = 0,
+                      memory_type: str | None = None) -> tuple[list[dict], int]:
+        """分页列出记忆"""
+        return self.store.list_all(limit, offset, memory_type)
+
+    def update_memory(self, memory_id: str, value: str, key: str = "") -> bool:
+        """更新记忆"""
+        return self.store.update(memory_id, value, key)
+
     def retrieve(self, query: str, n_results: int = 5) -> str:
         """检索相关记忆，格式化为 system prompt 注入文本。
 
@@ -66,6 +75,7 @@ class MemoryService:
         Returns:
             markdown 格式的记忆区块，无可检索内容时返回 ""
         """
+        # TODO 每次都会破坏上下文缓存前缀，需要优化
         if not self.enabled or not query or not query.strip():
             return ""
 

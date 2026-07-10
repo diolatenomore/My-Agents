@@ -52,3 +52,17 @@ class TaskManagerStatus(BaseModel):
 class GetStatsResponse(BaseModel):
     code: int
     data: TaskManagerStatus
+
+
+class MemoryItemDTO(BaseModel):
+    id: str
+    memory_type: str          # "preference" | "fact" | "identity"
+    value: str
+    key: str = ""
+    session_id: str = ""
+    created_at: str = ""
+
+
+class UpdateMemoryRequest(BaseModel):
+    value: str
+    key: str = ""

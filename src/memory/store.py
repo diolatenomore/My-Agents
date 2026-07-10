@@ -133,6 +133,86 @@ class MemoryStore:
         except Exception:
             return False
 
+    def list_all(self, limit: int = 20, offset: int = 0,
+                 memory_type: str | None = None) -> tuple[list[dict], int]:
+        """分页列出记忆，按创建时间倒序。
+
+        Args:
+            limit: 每页条数
+            offset: 偏移量
+            memory_type: 可选类型过滤 (preference/fact/identity)
+
+        Returns:
+            (items, total_count)
+        """
+        where_filter = None
+        if memory_type:
+            where_filter = {"memory_type": memory_type}
+
+        try:
+            results = self.collection.get(
+                where=where_filter,
+                include=["documents", "metadatas"],
+            )
+        except Exception:
+            return [], 0
+
+        if not results["ids"]:
+            return [], 0
+
+        items = []
+        for i, doc_id in enumerate(results["ids"]):
+            meta = results["metadatas"][i]
+            items.append({
+                "id": doc_id,
+                "value": results["documents"][i],
+                "memory_type": meta.get("memory_type", ""),
+                "key": meta.get("key", ""),
+                "session_id": meta.get("session_id", ""),
+                "created_at": meta.get("created_at", ""),
+            })
+
+        # 按创建时间倒序
+        items.sort(key=lambda x: x["created_at"], reverse=True)
+        total = len(items)
+        items = items[offset:offset + limit]
+
+        return items, total
+
+    def update(self, memory_id: str, value: str, key: str = "") -> bool:
+        """更新记忆内容和 key。
+
+        ChromaDB 的 collection.update() 会对新 documents 重新 embedding。
+        """
+        try:
+            existing = self.collection.get(
+                ids=[memory_id],
+                include=["metadatas"],
+            )
+        except Exception:
+            return False
+
+        if not existing["ids"]:
+            return False
+
+        old_meta = existing["metadatas"][0]
+        new_meta = {
+            "memory_type": old_meta.get("memory_type", ""),
+            "key": key or old_meta.get("key", ""),
+            "session_id": old_meta.get("session_id", ""),
+            "created_at": old_meta.get("created_at", ""),
+        }
+
+        try:
+            self.collection.update(
+                ids=[memory_id],
+                documents=[value],
+                metadatas=[new_meta],
+            )
+            return True
+        except Exception:
+            return False
+
     def count(self) -> int:
         """记忆总数"""
         return self.collection.count()
