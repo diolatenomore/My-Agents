@@ -124,10 +124,11 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
 
         await session_manager.save_messages(session_id, result.messages)
 
-        # Fire-and-forget 提取长期记忆
-        asyncio.create_task(
-            get_memory_service().extract_from_messages(session_id, query, result.content)
-        )
+        # Fire-and-forget 提取长期记忆（按轮次间隔控制）
+        if get_memory_service().should_extract(session_id):
+            asyncio.create_task(
+                get_memory_service().extract_from_messages(session_id, result.messages)
+            )
 
     return ChatResponse(
         code=200,
@@ -228,11 +229,10 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
             except Exception as e:
                 logger.error(f"保存会话消息失败: {e}")
 
-        # Fire-and-forget 提取长期记忆
-        # TODO 提取的触发频率，目前是每次对话结束
-        if messages and final_content:
+        # Fire-and-forget 提取长期记忆（按轮次间隔控制）
+        if messages and final_content and get_memory_service().should_extract(session_id):
             asyncio.create_task(
-                get_memory_service().extract_from_messages(session_id, query, final_content)
+                get_memory_service().extract_from_messages(session_id, messages)
             )
 
 

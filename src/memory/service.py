@@ -6,6 +6,7 @@ from typing import Optional
 from src.memory.models import MemoryItem
 from src.memory.store import MemoryStore
 from src.memory.extraction import extract_memories
+from src.config import MEMORY_EXTRACTION_INTERVAL
 from src.utils.common import logger
 
 
@@ -23,20 +24,31 @@ class MemoryService:
     def __init__(self, store: MemoryStore):
         self.store = store
         self.enabled = True
+        self._extraction_rounds: dict[str, int] = {}
+        self._extraction_interval = MEMORY_EXTRACTION_INTERVAL
+
+    def should_extract(self, session_id: str) -> bool:
+        """检查是否需要对 session 执行记忆提取（按轮次间隔控制）。"""
+        counter = self._extraction_rounds.get(session_id, 0) + 1
+        self._extraction_rounds[session_id] = counter
+        if counter < self._extraction_interval:
+            return False
+        self._extraction_rounds[session_id] = 0
+        return True
 
     async def extract_from_messages(
-        self, session_id: str, query: str, response: str
+        self, session_id: str, messages: list[dict]
     ) -> None:
-        """从单轮对话中提取记忆并写入 ChromaDB（fire-and-forget）。
+        """审阅完整对话历史，提取记忆并写入 ChromaDB（fire-and-forget）。
 
-        只分析当前轮次的 query + response，增量积累。
+        将完整消息列表作为上下文送给 LLM，LLM 审阅后决定哪些值得记住。
         调用者应用 asyncio.create_task 包装，不阻塞主流程。
         """
         if not self.enabled:
             return
 
         try:
-            items = await extract_memories(query, response)
+            items = await extract_memories(messages)
             if not items:
                 return
 

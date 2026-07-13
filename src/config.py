@@ -29,6 +29,9 @@ STAGING_AREA_PATH = os.path.join(_project_root, "workspace/staging_area")
 # System Prompt 冻结时间（秒），同一 session 在 TTL 内复用首个 prompt
 SYSTEM_PROMPT_FREEZE_TTL = 10800  # 默认 3 小时
 
+# 记忆提取间隔（对话轮次数），每 N 轮对话提取一次记忆
+MEMORY_EXTRACTION_INTERVAL = 10
+
 # 长期记忆配置
 MEMORY_PERSIST_DIR = os.path.join(_project_root, "workspace/chroma_memory")
 MEMORY_EXTRACTION_ENABLED = True

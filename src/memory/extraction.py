@@ -1,4 +1,4 @@
-"""LLM 记忆提取 — 从对话轮次中提取偏好、事实、身份信息"""
+"""LLM 记忆提取 — 审阅完整对话历史，提取可沉淀的记忆"""
 
 import json
 import re
@@ -8,13 +8,22 @@ from openai import AsyncOpenAI
 from src.config import DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
 from src.utils.common import logger
 
-# 第一层语义去重
-EXTRACTION_PROMPT = """你是一个记忆提取系统。从以下对话中提取关于用户的长期有用信息。
+REVIEW_PROMPT = """请回顾以上对话，判断是否有值得保存到长期记忆中的信息。
 
 返回一个 JSON 数组，每个元素包含：
 - type: "preference" | "semantic"
 - key: (仅 type="preference" 时需要) 简短的英文 snake_case 键名
 - value: 一句完整、独立可理解的描述
+
+关注点：
+1. 用户是否透露了关于自身的信息——个人身份、偏好、习惯或其他值得记住的个人细节？
+2. 用户是否表达了对助手行为方式的期望、工作风格或运作方式的偏好？
+
+如果发现有价值的信息，请以下列 JSON 格式提取记忆：
+[
+  {"type": "preference", "key": "language", "value": "用户偏好中文回复"},
+  {"type": "semantic", "value": "用户是软件工程师"}
+]
 
 类型说明：
 - preference: 用户的喜好、偏好、习惯。如语言偏好、回复风格、工具选择。必须有 key。
@@ -25,50 +34,42 @@ EXTRACTION_PROMPT = """你是一个记忆提取系统。从以下对话中提取
 - 只提取明确陈述的信息，不推测
 - 如果助手回复中的信息明显是对用户已有记忆的复述/确认（如用户问"我是谁"，助手回答"你是xxx"），**不要提取**，因为这条记忆已存在。
 - 没有可提取的内容则返回空数组 []
-- 如果用户只是询问/确认已有信息，返回空数组 []
 - value 不超过 100 字，必须独立可理解（不依赖上下文）
 - preference 必须有明确的 key 字段
 - 忽略临时性、一次性的信息（如 "帮我查一下天气"）
 
-用户消息: {query}
+只返回 JSON 数组，不要其他内容。"""
 
-助手回复: {response}
-
-只返回 JSON 数组，不要其他内容："""
-
-_MAX_CHARS = 4000  # 单次提取的最大输入字符数
+_MAX_CHARS = 8000  # 完整对话的最大字符数
 _JSON_PATTERN = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```|(\[[\s\S]*\]\s*$)")
 
 
-async def extract_memories(query: str, response: str) -> list[dict]:
-    """调用 LLM 从单轮对话中提取记忆。
+async def extract_memories(messages: list[dict]) -> list[dict]:
+    """审阅完整对话历史，提取记忆。
 
     Args:
-        query: 用户消息
-        response: 助手最终回复
+        messages: 完整对话消息列表（含 system、user、assistant、tool 等）
 
     Returns:
         提取到的记忆列表 [{"type": ..., "key": ..., "value": ...}, ...]
         解析失败或无可提取内容时返回空列表
     """
-    # 截断过长文本
-    if len(query) > _MAX_CHARS:
-        query = query[:_MAX_CHARS]
-    if len(response) > _MAX_CHARS:
-        response = response[:_MAX_CHARS]
+    # 估算字符数，截断过长上下文
+    # TODO 等待上下文压缩机制完善
+    # context = _truncate_messages(messages)
 
-    prompt = EXTRACTION_PROMPT.format(query=query, response=response)
-    # TODO 添加retry重试机制，重新抛给llm（限制输出pydantic模型格式？）
     try:
         client = AsyncOpenAI(base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
         result = await client.chat.completions.create(
             model="deepseek-v4-flash",
             messages=[
-                {"role": "system", "content": "只返回 JSON 数组，不返回其他内容。"},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": "你是一个记忆提取系统，善于从对话中提取长期记忆。"},
+                *context,
+                {"role": "user", "content": REVIEW_PROMPT},
             ],
             temperature=0.0,
         )
+        # TODO 输出不为json格式怎么办？
         return _parse_json(result.choices[0].message.content)
     except Exception as e:
         logger.warning(f"记忆提取 LLM 调用失败: {e}")
