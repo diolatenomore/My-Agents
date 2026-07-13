@@ -98,6 +98,10 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
         system_prompt = _build_system_prompt(memory_block=memory_block)
         prompt_cache.set(model_name, session_id, system_prompt)
 
+    # 动态记忆注入 user message（随 query 变化，不碰 system prompt）
+    dynamic_block = get_memory_service().get_dynamic_block(query)
+    augmented_query = f"以下为用户的原始输入：\n{query}\n\n{dynamic_block}" if dynamic_block else query
+
     review_tree = None
 
     async with session_manager.lock(session_id):
@@ -107,7 +111,7 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
         await init_vfs(session_id)
         try:
             history = await session_manager.load_history(session_id)
-            result = await run_agent(query, history=history, system_prompt=system_prompt)
+            result = await run_agent(augmented_query, history=history, system_prompt=system_prompt)
 
             # 如果有文件修改，处理 merge 结果，写入数据库
             from src.vfs.diff_table import DiffTable
@@ -178,6 +182,10 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         system_prompt = _build_system_prompt(memory_block=memory_block)
         prompt_cache.set(model_name, session_id, system_prompt)
 
+    # 动态记忆注入 user message（随 query 变化，不碰 system prompt）
+    dynamic_block = get_memory_service().get_dynamic_block(query)
+    augmented_query = f"以下为用户原始输入：\n{query}\n\n{dynamic_block}" if dynamic_block else query
+
     # 提前通知前端 session_id
     yield f"event: session_ready\ndata: {json.dumps({'type': 'session_ready', 'session_id': session_id}, ensure_ascii=False)}\n\n"
 
@@ -186,7 +194,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
     try:
         async with session_manager.lock(session_id):
             async for event in run_agent_stream(
-                query,
+                augmented_query,
                 history=history,
                 system_prompt=system_prompt,
                 cancel_event=cancel_event,

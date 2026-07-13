@@ -447,10 +447,10 @@ def _build_system_prompt(
 
 
 def _get_memory_block(query: str) -> str:
-    """检索长期记忆，返回注入 system prompt 的 markdown 文本"""
+    """检索偏好的静态记忆，返回注入 system prompt 的 markdown 文本"""
     try:
         from src.memory.service import get_memory_service
-        return get_memory_service().retrieve(query)
+        return get_memory_service().get_static_block()
     except Exception:
         return ""
 

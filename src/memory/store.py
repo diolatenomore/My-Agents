@@ -72,7 +72,7 @@ class MemoryStore:
         return len(ids)
 
     def query(self, text: str, n_results: int = 5) -> list[dict]:
-        """语义搜索相关记忆（facts + identity）。
+        """语义搜索相关记忆（semantic 类型）。
 
         Args:
             text: 搜索文本（通常是用户 query）
@@ -88,10 +88,7 @@ class MemoryStore:
             results = self.collection.query(
                 query_texts=[text],
                 n_results=min(n_results, self.collection.count()),
-                where={"$or": [
-                    {"memory_type": "fact"},
-                    {"memory_type": "identity"},
-                ]},
+                where={"memory_type": "semantic"},
                 include=["documents", "metadatas", "distances"],
             )
         except Exception:
@@ -149,7 +146,7 @@ class MemoryStore:
         Args:
             limit: 每页条数
             offset: 偏移量
-            memory_type: 可选类型过滤 (preference/fact/identity)
+            memory_type: 可选类型过滤 (preference/semantic)
 
         Returns:
             (items, total_count)

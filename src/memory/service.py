@@ -65,54 +65,54 @@ class MemoryService:
         """更新记忆"""
         return self.store.update(memory_id, value, key)
 
-    def retrieve(self, query: str, n_results: int = 5) -> str:
-        """检索相关记忆，格式化为 system prompt 注入文本。
-
-        Args:
-            query: 用户当前消息
-            n_results: 语义搜索返回的最大 fact 数
-
-        Returns:
-            markdown 格式的记忆区块，无可检索内容时返回 ""
-        """
-        # TODO 每次都会破坏上下文缓存前缀，需要优化
-        if not self.enabled or not query or not query.strip():
+    def get_static_block(self) -> str:
+        """获取静态记忆区块（preference），注入 system prompt"""
+        if not self.enabled:
             return ""
-
         try:
             prefs = self.store.get_preferences()
-            facts = self.store.query(query, n_results=n_results)
-            return _format_memory_block(prefs, facts)
+            return _format_preference_block(prefs)
         except Exception as e:
-            logger.warning(f"MemoryService 检索失败: {e}")
+            logger.warning(f"获取静态记忆失败: {e}")
+            return ""
+
+    def get_dynamic_block(self, query: str, n_results: int = 5) -> str:
+        """获取动态记忆区块（semantic），按 query 检索，注入 user message"""
+        if not self.enabled or not query or not query.strip():
+            return ""
+        try:
+            facts = self.store.query(query, n_results=n_results)
+            return _format_semantic_block(facts)
+        except Exception as e:
+            logger.warning(f"获取动态记忆失败: {e}")
             return ""
 
 
-def _format_memory_block(prefs: list[dict], facts: list[dict]) -> str:
-    """将偏好和事实格式化为 system prompt 区块"""
-    parts = ["## 长期记忆"]
-
-    if prefs:
-        parts.append("### 用户偏好（始终遵循）")
-        for p in prefs:
-            key = p.get("key", "")
-            value = p.get("value", "")
-            if key:
-                parts.append(f"- **{key}**: {value}")
-            else:
-                parts.append(f"- {value}")
-
-    if facts:
-        parts.append("### 相关历史信息")
-        for f in facts:
-            value = f.get("value", "")
-            if value:
-                parts.append(f"- {value}")
-
-    if len(parts) == 1:  # 只有标题
+def _format_preference_block(prefs: list[dict]) -> str:
+    """格式化偏好为 system prompt 区块"""
+    if not prefs:
         return ""
-
+    parts = ["## 用户偏好（始终遵循）"]
+    for p in prefs:
+        key = p.get("key", "")
+        value = p.get("value", "")
+        if key:
+            parts.append(f"- **{key}**: {value}")
+        else:
+            parts.append(f"- {value}")
     return "\n".join(parts) + "\n"
+
+
+def _format_semantic_block(facts: list[dict]) -> str:
+    """格式化语义记忆为 user message 补充区块"""
+    if not facts:
+        return ""
+    parts = ["以下是你可能需要的用户相关信息："]
+    for f in facts:
+        value = f.get("value", "")
+        if value:
+            parts.append(f"- {value}")
+    return "\n".join(parts)
 
 
 # ============ 模块级单例（懒加载） ============

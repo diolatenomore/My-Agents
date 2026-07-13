@@ -10,9 +10,8 @@ class MemoryItem:
 
     memory_type:
         - preference: 用户偏好（key-value 结构，按 key 去重）
-        - fact: 客观事实（始终追加）
-        - identity: 用户身份信息（始终追加）
+        - semantic: 关于用户及其世界的客观事实（始终追加）
     """
-    memory_type: Literal["preference", "fact", "identity"]
+    memory_type: Literal["preference", "semantic"]
     value: str
     key: str = ""  # 仅 preference 使用，如 "language", "response_style"

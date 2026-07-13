@@ -12,15 +12,14 @@ from src.utils.common import logger
 EXTRACTION_PROMPT = """你是一个记忆提取系统。从以下对话中提取关于用户的长期有用信息。
 
 返回一个 JSON 数组，每个元素包含：
-- type: "preference" | "fact" | "identity"
+- type: "preference" | "semantic"
 - key: (仅 type="preference" 时需要) 简短的英文 snake_case 键名
 - value: 一句完整、独立可理解的描述
 
 类型说明：
 - preference: 用户的喜好、偏好、习惯。如语言偏好、回复风格、工具选择。必须有 key。
   - 常用 key 示例: language, response_style, code_style, editor, os, framework
-- fact: 关于用户项目、工作内容的客观事实。不需要 key。
-- identity: 用户的身份信息（姓名、角色、公司、职位）。不需要 key。
+- semantic: 关于用户及其世界的客观事实，包括身份信息、项目信息、工作内容等。不需要 key。
 
 规则：
 - 只提取明确陈述的信息，不推测
@@ -114,7 +113,7 @@ def _validate_items(items: list) -> list[dict]:
         if not isinstance(item, dict):
             continue
         memory_type = item.get("type", "")
-        if memory_type not in ("preference", "fact", "identity"):
+        if memory_type not in ("preference", "semantic"):
             continue
         value = item.get("value", "").strip()
         if not value:
