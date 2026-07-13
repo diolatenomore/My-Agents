@@ -22,6 +22,7 @@ from src.tools.loader import discover_tools
 from src.agent.react_loop import run_agent, run_agent_stream
 from src.agent.cancel import CancelRegistry
 from src.memory.service import get_memory_service
+from src.session.prompt_cache import SystemPromptCache
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -36,6 +37,9 @@ async def lifespan(app: FastAPI):
 
     # 初始化取消注册表
     app.state.cancel_registry = CancelRegistry()
+
+    # 初始化 system prompt 冻结缓存
+    app.state.system_prompt_cache = SystemPromptCache()
 
     try:
         yield
@@ -77,8 +81,22 @@ async def chat(chat_request: ChatRequest, request: Request):
 
 async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) -> ChatResponse:
     """新 Agent 循环（非流式），带 session 管理"""
+    from src.agent.react_loop import _build_system_prompt, _get_memory_block
+    from src.config import MODEL
+
     query = chat_request.query
     session_id = chat_request.session_id or str(uuid.uuid4())
+
+    # 系统 prompt 冻结逻辑（与流式路径一致）
+    prompt_cache = app.state.system_prompt_cache
+    model_name = MODEL
+    frozen_prompt = prompt_cache.get(model_name, session_id)
+    if frozen_prompt:
+        system_prompt = frozen_prompt
+    else:
+        memory_block = _get_memory_block(query)
+        system_prompt = _build_system_prompt(memory_block=memory_block)
+        prompt_cache.set(model_name, session_id, system_prompt)
 
     review_tree = None
 
@@ -89,7 +107,7 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
         await init_vfs(session_id)
         try:
             history = await session_manager.load_history(session_id)
-            result = await run_agent(query, history=history)
+            result = await run_agent(query, history=history, system_prompt=system_prompt)
 
             # 如果有文件修改，处理 merge 结果，写入数据库
             from src.vfs.diff_table import DiffTable
@@ -139,6 +157,8 @@ async def chat_stream(chat_request: ChatRequest):
 async def _stream_events(query: str, session_id: str, session_manager: SessionManager):
     """生成 SSE 事件流"""
     from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
+    from src.agent.react_loop import _build_system_prompt, _get_memory_block
+    from src.config import MODEL
     set_current_task_id(session_id)
     await init_vfs(session_id)
     history = await session_manager.load_history(session_id)
@@ -146,6 +166,17 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
     # 注册取消事件
     cancel_registry = app.state.cancel_registry
     cancel_event = cancel_registry.create(session_id)
+
+    # 系统 prompt 冻结逻辑：同一 (model, session) 在 TTL 内复用首个 prompt
+    prompt_cache = app.state.system_prompt_cache
+    model_name = MODEL  # TODO 后续前端加上模型配置
+    frozen_prompt = prompt_cache.get(model_name, session_id)
+    if frozen_prompt:
+        system_prompt = frozen_prompt
+    else:
+        memory_block = _get_memory_block(query)
+        system_prompt = _build_system_prompt(memory_block=memory_block)
+        prompt_cache.set(model_name, session_id, system_prompt)
 
     # 提前通知前端 session_id
     yield f"event: session_ready\ndata: {json.dumps({'type': 'session_ready', 'session_id': session_id}, ensure_ascii=False)}\n\n"
@@ -157,6 +188,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
             async for event in run_agent_stream(
                 query,
                 history=history,
+                system_prompt=system_prompt,
                 cancel_event=cancel_event,
             ):
                 # TODO 考虑中断之后vfs的处理
@@ -361,6 +393,8 @@ async def list_sessions():
 async def delete_session(session_id: str = Path(...)):
     """删除会话"""
     await app.state.session_manager.delete(session_id)
+    # 同步清除冻结的 system prompt 缓存
+    app.state.system_prompt_cache.clear(session_id)
     return JSONResponse(content={"code": 200, "message": f"会话 {session_id} 已删除"})
 
 

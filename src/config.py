@@ -26,6 +26,9 @@ AGENT_WORKSPACE_PATH = os.path.join(_project_root, "workspace/agent_workspace")
 # 暂存区路径配置
 STAGING_AREA_PATH = os.path.join(_project_root, "workspace/staging_area")
 
+# System Prompt 冻结时间（秒），同一 session 在 TTL 内复用首个 prompt
+SYSTEM_PROMPT_FREEZE_TTL = 10800  # 默认 3 小时
+
 # 长期记忆配置
 MEMORY_PERSIST_DIR = os.path.join(_project_root, "workspace/chroma_memory")
 MEMORY_EXTRACTION_ENABLED = True
