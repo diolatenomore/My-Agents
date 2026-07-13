@@ -16,11 +16,11 @@ from src.models.http_dtos import (
     ChatRequest, ChatResponse, SessionDTO,
     GetTaskStatusResponse, TaskChangeResponse,
     UpdateTaskPriorityRequest, GetStatsResponse, TaskManagerStatus,
-    MemoryItemDTO, UpdateMemoryRequest,
+    UpdateMemoryRequest,
 )
 from src.tools.loader import discover_tools
 from src.agent.react_loop import run_agent, run_agent_stream
-from src.agent.cancel import CancelRegistry
+from src.session.cancel import CancelRegistry
 from src.memory.service import get_memory_service
 from src.session.prompt_cache import SystemPromptCache
 
