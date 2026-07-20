@@ -1,8 +1,13 @@
 import json
+import os
+import re
+import shutil
+import tempfile
 import uuid
+import zipfile
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Path, Request
+from fastapi import FastAPI, File, HTTPException, Path, Request, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -482,6 +487,91 @@ async def set_skill_state(name: str, disabled: bool = True):
     else:
         loader.enable_skill(name)
         return JSONResponse(content={"code": 200, "disabled": False, "message": f"技能 {name} 已启用"})
+
+
+@app.post('/api/skills/upload')
+async def upload_skill(file: UploadFile = File(...)):
+    """上传技能 zip 包，验证格式后安装到 skills/ 目录"""
+    from src.skills.loader import get_loader, _find_skill_md, _parse_frontmatter
+
+    if not file.filename or not file.filename.lower().endswith('.zip'):
+        return JSONResponse(content={"code": 400, "message": "只支持 .zip 格式的文件"}, status_code=400)
+
+    # 保存上传文件到临时目录
+    tmp_dir = tempfile.mkdtemp(prefix="skill_upload_")
+    zip_path = os.path.join(tmp_dir, "upload.zip")
+    try:
+        content = await file.read()
+        with open(zip_path, "wb") as f:
+            f.write(content)
+
+        # 解压
+        extract_dir = os.path.join(tmp_dir, "extracted")
+        os.makedirs(extract_dir)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            # 安全检查：防止 zip 炸弹
+            total_size = sum(info.file_size for info in zf.infolist())
+            if total_size > 15 * 1024 * 1024:  # 15MB 限制
+                return JSONResponse(content={"code": 400, "message": "zip 包过大，限制 15MB"}, status_code=400)
+            zf.extractall(extract_dir)
+
+        # 在解压目录中查找 SKILL.md / skill.md（最多往下找一层）
+        skill_md_path = _find_skill_md(extract_dir)
+        skill_root = extract_dir
+
+        if not skill_md_path:
+            # 尝试往下一层目录查找
+            subdirs = [d for d in os.listdir(extract_dir)
+                       if os.path.isdir(os.path.join(extract_dir, d)) and not d.startswith('.')]
+            if len(subdirs) == 1:
+                skill_root = os.path.join(extract_dir, subdirs[0])
+                skill_md_path = _find_skill_md(skill_root)
+
+        if not skill_md_path:
+            return JSONResponse(content={"code": 400, "message": "zip 包中未找到 SKILL.md 或 skill.md 文件"}, status_code=400)
+
+        # 解析 frontmatter 验证必填字段
+        meta = _parse_frontmatter(skill_md_path)
+        if meta is None:
+            return JSONResponse(content={"code": 400, "message": "SKILL.md 格式不正确，缺少 name 或 description 字段"}, status_code=400)
+
+        # 目标目录名：优先取父目录名（单目录 zip），否则用 name 清理后作为目录名
+        if skill_root != extract_dir:
+            target_dirname = os.path.basename(skill_root)
+        else:
+            target_dirname = _sanitize_dirname(meta.name)
+
+        loader = get_loader()
+        target_path = os.path.join(loader.skills_dir, target_dirname)
+        if os.path.exists(target_path):
+            return JSONResponse(
+                content={"code": 409, "message": f"技能目录 {target_dirname} 已存在，请先删除后再上传"},
+                status_code=409,
+            )
+
+        # 复制到 skills/ 目录
+        shutil.copytree(skill_root, target_path)
+        loader._invalidate_metas()
+
+        return JSONResponse(content={
+            "code": 200,
+            "message": f"技能 {meta.name} 安装成功",
+            "skill": {"name": meta.name, "description": meta.description, "version": meta.version},
+        })
+
+    except zipfile.BadZipFile:
+        return JSONResponse(content={"code": 400, "message": "无效的 zip 文件"}, status_code=400)
+    except Exception as e:
+        return JSONResponse(content={"code": 500, "message": f"安装失败: {str(e)}"}, status_code=500)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _sanitize_dirname(name: str) -> str:
+    """将技能名转为安全的目录名：替换非法字符，去首尾空白"""
+    name = re.sub(r'[<>:"/\\|?*\s]+', '-', name)
+    name = name.strip('-').lower()
+    return name or "unnamed-skill"
 
 
 if __name__ == '__main__':

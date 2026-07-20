@@ -206,6 +206,8 @@
     <div class="skill-toolbar">
       <span style="font-weight:600;font-size:14px;">技能管理</span>
       <button onclick="loadSkills()" style="padding:6px 16px;font-size:12px;">刷新</button>
+      <input type="file" id="skillUploadInput" accept=".zip" style="display:none" onchange="handleSkillUpload(this)">
+      <button onclick="document.getElementById('skillUploadInput').click()" style="padding:6px 16px;font-size:12px;background:#1976d2;color:#fff;border:none;border-radius:4px;cursor:pointer;">上传技能</button>
       <span class="skill-count" id="skillCount">0 个</span>
     </div>
     <div class="skill-list" id="skillList">
@@ -974,6 +976,33 @@ async function setSkillState(name, disabled) {
   } catch (err) {
     alert('网络错误: ' + err.message);
   }
+}
+
+async function handleSkillUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (!file.name.toLowerCase().endsWith('.zip')) {
+    alert('只支持 .zip 格式的文件');
+    input.value = '';
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  try {
+    const res = await fetch('/api/skills/upload', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (data.code === 200) {
+      alert(data.message);
+      await loadSkills();
+    } else {
+      alert(data.message || '上传失败');
+    }
+  } catch (err) {
+    alert('网络错误: ' + err.message);
+  }
+  input.value = '';
 }
 
 // ============ 事件绑定 ============
