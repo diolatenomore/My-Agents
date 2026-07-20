@@ -46,7 +46,7 @@ class MemoryStore:
         now = datetime.now(timezone.utc).isoformat()
 
         for item in items:
-            # 第二层防护：统一用相似度去重，对所有类型都做检查
+            # 用相似度去重，对所有类型都做检查
             similar = self._find_similar(item.value, item.memory_type)
             if similar and similar["distance"] <= MEMORY_DEDUP_THRESHOLD:
                 logger.debug(
@@ -71,12 +71,14 @@ class MemoryStore:
         self.collection.add(ids=ids, documents=documents, metadatas=metadatas)
         return len(ids)
 
-    def query(self, text: str, n_results: int = 5) -> list[dict]:
-        """语义搜索相关记忆（semantic 类型）。
+    def query(self, text: str, n_results: int = 5,
+              memory_type: str = "semantic") -> list[dict]:
+        """语义搜索相关记忆。
 
         Args:
             text: 搜索文本（通常是用户 query）
             n_results: 返回结果数
+            memory_type: 类型过滤，semantic / preference / all
 
         Returns:
             [{"id": ..., "value": ..., "memory_type": ..., "key": ..., "distance": ...}, ...]
@@ -84,13 +86,16 @@ class MemoryStore:
         if not text or not text.strip():
             return []
 
+        kwargs: dict = {
+            "query_texts": [text],
+            "n_results": min(n_results, self.collection.count()),
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if memory_type != "all":
+            kwargs["where"] = {"memory_type": memory_type}
+
         try:
-            results = self.collection.query(
-                query_texts=[text],
-                n_results=min(n_results, self.collection.count()),
-                where={"memory_type": "semantic"},
-                include=["documents", "metadatas", "distances"],
-            )
+            results = self.collection.query(**kwargs)
         except Exception:
             # collection 为空或 where 过滤后无结果时 ChromaDB 可能抛异常
             return []

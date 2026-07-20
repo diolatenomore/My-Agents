@@ -15,6 +15,7 @@ def discover_tools():
     import src.tools.skill_tools  # noqa: F401
     import src.tools.web_tools  # noqa: F401
     import src.tools.execute_tools  # noqa: F401
+    import src.tools.memory_tools  # noqa: F401
 
     logger.info(f"工具加载完成：共 {len(list_tools())} 个工具")
 
