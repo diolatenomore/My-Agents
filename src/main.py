@@ -460,6 +460,30 @@ async def count_memories():
     })
 
 
+# ========== 技能管理 API ==========
+
+@app.get('/api/skills')
+async def list_skills():
+    """列出所有技能（含启用/禁用状态）"""
+    from src.skills.loader import get_loader
+    loader = get_loader()
+    skills = loader.list_all_skills()
+    return JSONResponse(content={"code": 200, "skills": skills})
+
+
+@app.put('/api/skills/toggle')
+async def set_skill_state(name: str, disabled: bool = True):
+    """置技能启用/禁用状态（幂等）。name 通过 query 参数传递，避免技能名含 / 等特殊字符时路径解析异常"""
+    from src.skills.loader import get_loader
+    loader = get_loader()
+    if disabled:
+        loader.disable_skill(name)
+        return JSONResponse(content={"code": 200, "disabled": True, "message": f"技能 {name} 已禁用"})
+    else:
+        loader.enable_skill(name)
+        return JSONResponse(content={"code": 200, "disabled": False, "message": f"技能 {name} 已启用"})
+
+
 if __name__ == '__main__':
     import uvicorn
     uvicorn.run(app, host='localhost', port=8000)

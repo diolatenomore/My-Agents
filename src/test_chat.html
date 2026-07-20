@@ -103,6 +103,47 @@
   .mem-actions button.edit-btn:hover { background: #e0e0e0; }
   .mem-actions button.del-btn { background: #ffebee; color: #c62828; }
   .mem-actions button.del-btn:hover { background: #ffcdd2; }
+
+  /* 技能管理页面 */
+  .skill-page { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .skill-page .skill-toolbar { padding: 12px 20px; background: #fff; border-bottom: 1px solid #ddd; display: flex; gap: 10px; align-items: center; }
+  .skill-page .skill-toolbar .skill-count { font-size: 13px; color: #666; margin-left: auto; }
+  .skill-page .skill-list { flex: 1; overflow-y: auto; }
+  .skill-row { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #f5f5f5; cursor: pointer; transition: background 0.1s; }
+  .skill-row:hover { background: #fafafa; }
+  .skill-row.selected { background: #e3f2fd; }
+  .skill-row .skill-icon { font-size: 20px; flex-shrink: 0; }
+  .skill-row .skill-info { flex: 1; min-width: 0; }
+  .skill-row .skill-name { font-weight: 600; font-size: 14px; color: #333; }
+  .skill-row .skill-version { font-size: 11px; color: #999; margin-left: 6px; }
+  .skill-row .skill-desc { font-size: 12px; color: #666; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .skill-row .skill-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+  .skill-row .skill-tag { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #f0f0f0; color: #666; }
+  .skill-row .skill-status { flex-shrink: 0; }
+  .skill-toggle { padding: 4px 14px; font-size: 12px; border-radius: 14px; border: 1px solid #ccc; cursor: pointer; background: #f5f5f5; color: #666; transition: all 0.15s; }
+  .skill-toggle.enabled { background: #e8f5e9; color: #2e7d32; border-color: #a5d6a7; }
+  .skill-toggle.disabled { background: #ffebee; color: #c62828; border-color: #ef9a9a; }
+  .skill-toggle:hover { opacity: 0.85; }
+
+  /* 技能详情面板（弹窗） */
+  .skill-modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.3); z-index: 1000; align-items: center; justify-content: center; }
+  .skill-modal-overlay.show { display: flex; }
+  .skill-modal { background: #fff; border-radius: 12px; width: 480px; max-width: 90vw; max-height: 70vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px rgba(0,0,0,0.15); }
+  .skill-modal .modal-header { padding: 16px 20px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .skill-modal .modal-header h3 { font-size: 15px; margin: 0; }
+  .skill-modal .modal-header .close-btn { margin-left: auto; background: none; border: none; font-size: 20px; color: #999; cursor: pointer; padding: 0 4px; }
+  .skill-modal .modal-header .close-btn:hover { color: #333; }
+  .skill-modal .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+  .skill-modal .modal-body .detail-row { display: flex; gap: 10px; margin-bottom: 10px; font-size: 13px; }
+  .skill-modal .modal-body .detail-label { color: #999; min-width: 48px; flex-shrink: 0; }
+  .skill-modal .modal-body .detail-value { color: #333; word-break: break-word; }
+  .skill-modal .modal-body .detail-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+  .skill-modal .modal-body .detail-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: #e3f2fd; color: #1565c0; }
+  .skill-modal .modal-footer { padding: 12px 20px; border-top: 1px solid #eee; display: flex; gap: 8px; flex-shrink: 0; }
+  .skill-modal .modal-footer .skill-toggle { padding: 6px 18px; font-size: 13px; border-radius: 6px; border: 1px solid #ccc; cursor: pointer; background: #f5f5f5; color: #666; transition: all 0.15s; }
+  .skill-modal .modal-footer .skill-toggle.enabled { background: #e8f5e9; color: #2e7d32; border-color: #a5d6a7; }
+  .skill-modal .modal-footer .skill-toggle.disabled { background: #ffebee; color: #c62828; border-color: #ef9a9a; }
+  .skill-modal .modal-footer .skill-toggle:hover { opacity: 0.85; }
 </style>
 </head>
 <body>
@@ -110,6 +151,7 @@
 <div class="sidebar">
   <div class="sidebar-tabs">
     <button id="tabMemory" onclick="showMemoryPage()">记忆</button>
+    <button id="tabSkills" onclick="showSkillsPage()">技能</button>
     <button class="active" id="tabChat" onclick="showChatPage()">会话</button>
   </div>
   <div class="session-list" id="sessionList"></div>
@@ -158,6 +200,28 @@
         <button id="memPrevBtn" disabled onclick="prevMemPage()">上一页</button>
         <button id="memNextBtn" disabled onclick="nextMemPage()">下一页</button>
       </div>
+    </div>
+  </div>
+  <div class="skill-page" id="skillPage" style="display:none;">
+    <div class="skill-toolbar">
+      <span style="font-weight:600;font-size:14px;">技能管理</span>
+      <button onclick="loadSkills()" style="padding:6px 16px;font-size:12px;">刷新</button>
+      <span class="skill-count" id="skillCount">0 个</span>
+    </div>
+    <div class="skill-list" id="skillList">
+      <div class="empty-state">加载中...</div>
+    </div>
+  </div>
+
+  <!-- 技能详情弹窗 -->
+  <div class="skill-modal-overlay" id="skillModalOverlay" onclick="closeSkillDetail(event)">
+    <div class="skill-modal" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3 id="skillModalName"></h3>
+        <button class="close-btn" onclick="closeSkillDetail()">x</button>
+      </div>
+      <div class="modal-body" id="skillModalBody"></div>
+      <div class="modal-footer" id="skillModalFooter"></div>
     </div>
   </div>
 </div>
@@ -657,27 +721,32 @@ async function processReview(taskId, approved) {
 const memState = { page: 1, limit: 20, total: 0 };
 
 function showChatPage() {
-  // 隐藏记忆页面，显示对话页面
+  // 隐藏记忆页面和技能页面，显示对话页面
   document.getElementById('memoryPage').style.display = 'none';
+  document.getElementById('skillPage').style.display = 'none';
   document.getElementById('messages').style.display = '';
   document.querySelector('.input-area').style.display = '';
   document.querySelector('.header').style.display = '';
+  document.getElementById('reviewPanel').style.display = '';
   // 更新 tab 样式
   document.getElementById('tabChat').classList.add('active');
   document.getElementById('tabMemory').classList.remove('active');
+  document.getElementById('tabSkills').classList.remove('active');
 }
 
 function showMemoryPage() {
   if (isStreaming) return;
-  // 隐藏对话页面，显示记忆页面
+  // 隐藏对话页面和技能页面，显示记忆页面
   document.getElementById('messages').style.display = 'none';
   document.querySelector('.input-area').style.display = 'none';
   document.querySelector('.header').style.display = 'none';
   document.getElementById('reviewPanel').classList.remove('show');
+  document.getElementById('skillPage').style.display = 'none';
   document.getElementById('memoryPage').style.display = 'flex';
   // 更新 tab 样式
   document.getElementById('tabChat').classList.remove('active');
   document.getElementById('tabMemory').classList.add('active');
+  document.getElementById('tabSkills').classList.remove('active');
   // 重置分页并加载
   memState.page = 1;
   document.getElementById('memTypeFilter').value = '';
@@ -779,6 +848,132 @@ async function deleteMemory(id) {
 
 function escapeAttr(str) {
   return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+// ============ 技能管理 ============
+
+const skillState = { selectedName: null, skillsCache: [] };
+
+function showSkillsPage() {
+  if (isStreaming) return;
+  // 隐藏对话页面和记忆页面，显示技能页面
+  document.getElementById('messages').style.display = 'none';
+  document.querySelector('.input-area').style.display = 'none';
+  document.querySelector('.header').style.display = 'none';
+  document.getElementById('reviewPanel').classList.remove('show');
+  document.getElementById('memoryPage').style.display = 'none';
+  document.getElementById('skillPage').style.display = 'flex';
+  // 更新 tab 样式
+  document.getElementById('tabChat').classList.remove('active');
+  document.getElementById('tabMemory').classList.remove('active');
+  document.getElementById('tabSkills').classList.add('active');
+  // 加载技能列表
+  loadSkills();
+}
+
+async function loadSkills() {
+  try {
+    const res = await fetch('/api/skills');
+    const data = await res.json();
+    if (data.code === 200) {
+      skillState.skillsCache = data.skills;
+      renderSkillList(data.skills);
+    }
+  } catch (err) {
+    document.getElementById('skillList').innerHTML = `<div class="empty-state">加载失败: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function renderSkillList(skills) {
+  const listEl = document.getElementById('skillList');
+  document.getElementById('skillCount').textContent = `${skills.length} 个`;
+
+  if (!skills || skills.length === 0) {
+    listEl.innerHTML = '<div class="empty-state">暂无技能</div>';
+    return;
+  }
+
+  listEl.innerHTML = skills.map(s => {
+    const selectedCls = s.name === skillState.selectedName ? ' selected' : '';
+    const tagsHtml = (s.tags || []).map(t => `<span class="skill-tag">${escapeHtml(t)}</span>`).join('');
+    const disabled = s.disabled;
+    const statusCls = disabled ? 'disabled' : 'enabled';
+    const statusText = disabled ? '已禁用' : '已启用';
+    return `<div class="skill-row${selectedCls}" onclick="showSkillDetail('${escapeAttr(s.name)}')">
+      <span class="skill-icon">📦</span>
+      <div class="skill-info">
+        <span class="skill-name">${escapeHtml(s.name)}</span>
+        <span class="skill-version">v${escapeHtml(s.version)}</span>
+        <div class="skill-desc">${escapeHtml(s.description)}</div>
+        <div class="skill-tags">${tagsHtml}</div>
+      </div>
+      <div class="skill-status" onclick="event.stopPropagation()">
+        <button class="skill-toggle ${statusCls}" onclick="setSkillState('${escapeAttr(s.name)}', ${!disabled})">${statusText}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function showSkillDetail(name) {
+  // 直接从缓存中取数据，不重复请求
+  const skill = skillState.skillsCache.find(s => s.name === name);
+  if (!skill) return;
+
+  skillState.selectedName = name;
+
+  // 高亮选中的行
+  document.querySelectorAll('.skill-row').forEach(row => row.classList.remove('selected'));
+  const rows = document.querySelectorAll('.skill-row');
+  rows.forEach(row => {
+    if (row.querySelector('.skill-name')?.textContent === name) {
+      row.classList.add('selected');
+    }
+  });
+
+  // 渲染弹窗
+  const disabled = skill.disabled;
+  const statusText = disabled ? '已禁用' : '已启用';
+  const tagsHtml = (skill.tags || []).map(t => `<span class="detail-tag">${escapeHtml(t)}</span>`).join('');
+  const statusCls = disabled ? 'disabled' : 'enabled';
+
+  document.getElementById('skillModalName').innerHTML = `${escapeHtml(skill.name)} <span style="font-size:12px;color:#999;font-weight:normal">v${escapeHtml(skill.version)}</span>`;
+  document.getElementById('skillModalBody').innerHTML = `
+    <div class="detail-row"><span class="detail-label">描述</span><span class="detail-value">${escapeHtml(skill.description)}</span></div>
+    <div class="detail-row"><span class="detail-label">版本</span><span class="detail-value">${escapeHtml(skill.version)}</span></div>
+    <div class="detail-row"><span class="detail-label">标签</span><div class="detail-tags">${tagsHtml || '<span style="color:#999">无</span>'}</div></div>
+    <div class="detail-row"><span class="detail-label">状态</span><span class="detail-value">${statusText}</span></div>
+  `;
+  document.getElementById('skillModalFooter').innerHTML = `
+    <button class="skill-toggle ${statusCls}" onclick="setSkillState('${escapeAttr(skill.name)}', ${!disabled})">${disabled ? '启用技能' : '禁用技能'}</button>
+  `;
+  document.getElementById('skillModalOverlay').classList.add('show');
+}
+
+function closeSkillDetail(e) {
+  // 如果点击的是 overlay 本身（非内部元素），关闭弹窗
+  if (e && e.target !== document.getElementById('skillModalOverlay')) return;
+  document.getElementById('skillModalOverlay').classList.remove('show');
+  skillState.selectedName = null;
+  document.querySelectorAll('.skill-row').forEach(row => row.classList.remove('selected'));
+}
+
+async function setSkillState(name, disabled) {
+  try {
+    const res = await fetch(`/api/skills/toggle?name=${encodeURIComponent(name)}&disabled=${disabled}`, { method: 'PUT' });
+    const data = await res.json();
+    if (data.code === 200) {
+      // 刷新列表（会更新缓存并重渲染）
+      await loadSkills();
+      // 如果弹窗还开着，重新展示
+      if (skillState.selectedName === name) {
+        showSkillDetail(name);
+      }
+    } else {
+      alert(data.message || '操作失败');
+    }
+  } catch (err) {
+    alert('网络错误: ' + err.message);
+  }
 }
 
 // ============ 事件绑定 ============

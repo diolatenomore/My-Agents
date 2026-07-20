@@ -36,9 +36,9 @@ class SkillLoader:
         """
         self._skills_dir = skills_dir
         self._lock = threading.RLock()
-        self._metas: Optional[list[SkillMeta]] = None  # Level 1 缓存
-        self._content_cache: dict[str, str] = {}        # Level 2/3 缓存
-        self._disabled: Optional[set[str]] = None        # 禁用列表缓存
+        self._all_metas: Optional[list[SkillMeta]] = None  # 全量元数据缓存（含已禁用）
+        self._content_cache: dict[str, str] = {}            # Level 2/3 内容缓存
+        self._disabled: Optional[set[str]] = None            # 禁用列表缓存
 
     @property
     def skills_dir(self) -> str:
@@ -82,7 +82,7 @@ class SkillLoader:
     def _invalidate_metas(self):
         """清空元数据缓存（配置变更后调用）"""
         with self._lock:
-            self._metas = None
+            self._all_metas = None
 
     # ---- 启用/禁用 API ----
 
@@ -119,23 +119,18 @@ class SkillLoader:
 
     # ---- 扫描与加载 ----
 
-    def discover(self) -> list[SkillMeta]:
-        """扫描 skills 目录，返回所有已启用的技能元数据（Level 1）
-
-        首次调用时扫描目录并缓存，后续调用直接返回缓存。
-        自动排除 skills_config.json 中 disabled 列表中的技能。
-        """
+    def _scan_all(self) -> list[SkillMeta]:
+        """扫描 skills 目录，返回所有技能元数据（含已禁用），带缓存"""
         with self._lock:
-            if self._metas is not None:
-                return self._metas
+            if self._all_metas is not None:
+                return self._all_metas
 
             dir_path = self.skills_dir
             if not os.path.isdir(dir_path):
                 logger.warning(f"Skills 目录不存在: {dir_path}")
-                self._metas = []
-                return self._metas
+                self._all_metas = []
+                return self._all_metas
 
-            disabled = self._get_disabled()
             metas = []
             for entry in sorted(os.scandir(dir_path), key=lambda e: e.name):
                 if not entry.is_dir():
@@ -146,14 +141,30 @@ class SkillLoader:
                 meta = _parse_frontmatter(skill_md)
                 if meta is None:
                     continue
-                if meta.name in disabled:
-                    continue
                 meta.dir_path = entry.path
                 metas.append(meta)
 
-            self._metas = metas
+            self._all_metas = metas
             logger.info(f"技能扫描完成：在 {dir_path} 共发现 {len(metas)} 个技能")
-            return self._metas
+            return self._all_metas
+
+    def discover(self) -> list[SkillMeta]:
+        """返回所有已启用的技能元数据（Level 1），共享 _scan_all 缓存"""
+        all_metas = self._scan_all()
+        disabled = self._get_disabled()
+        return [m for m in all_metas if m.name not in disabled]
+
+    def list_all_skills(self) -> list[dict]:
+        """列出所有技能（含已禁用），共享 _scan_all 缓存"""
+        all_metas = self._scan_all()
+        disabled = self._get_disabled()
+        return [{
+            "name": m.name,
+            "description": m.description,
+            "version": m.version,
+            "tags": m.tags,
+            "disabled": m.name in disabled,
+        } for m in all_metas]
 
     def load_skill(self, name: str) -> Optional[str]:
         """加载完整 SKILL.md 内容（Level 2），内容级缓存
