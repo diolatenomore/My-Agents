@@ -93,7 +93,7 @@ registry.register(
 )
 
 registry.register(
-    name="save_to_memory",
+    name="save_memory",
     description=(
         "保存一条信息到长期记忆，当且仅当这条信息值得记住时调用。比如当你了解到用户的偏好、习惯、身份、"
         "项目信息、过往经历等等内容。preference 用于偏好/习惯（必须指定 key），"
