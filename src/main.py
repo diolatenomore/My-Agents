@@ -24,6 +24,7 @@ from src.models.http_dtos import (
     UpdateMemoryRequest,
 )
 from src.tools.loader import discover_tools
+from src.tools.approval import approval_registry
 from src.agent.react_loop import run_agent, run_agent_stream
 from src.session.cancel import CancelRegistry
 from src.memory.service import get_memory_service
@@ -173,10 +174,6 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
     await init_vfs(session_id)
     history = await session_manager.load_history(session_id)
 
-    # 注册取消事件
-    cancel_registry = app.state.cancel_registry
-    cancel_event = cancel_registry.create(session_id)
-
     # 系统 prompt 冻结逻辑：同一 (model, session) 在 TTL 内复用首个 prompt
     prompt_cache = app.state.system_prompt_cache
     model_name = MODEL  # TODO 后续前端加上模型配置
@@ -197,13 +194,18 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
 
     messages: list = []
     final_content = ""
+    cancel_registry = app.state.cancel_registry
     try:
         async with session_manager.lock(session_id):
+            # 注册取消事件
+            cancel_event = cancel_registry.create(session_id)
+            
             async for event in run_agent_stream(
                 augmented_query,
+                cancel_event=cancel_event,
                 history=history,
                 system_prompt=system_prompt,
-                cancel_event=cancel_event,
+                session_id=session_id,
             ):
                 # TODO 考虑中断之后vfs的处理
                 if event["type"] == "cancelled":
@@ -290,6 +292,15 @@ async def process_review_item(task_id: str = Path(...), item_id: str = Path(...)
         await clean_vfs()
         clean_current_task_id()
     return JSONResponse({"code": 200, "message": "ok"})
+
+
+# ---- 工具审批接口 ----
+
+@app.post('/api/tools/decide/{session_id}/{tool_call_id}')
+async def decide_tool(session_id: str, tool_call_id: str, approved: bool = True):
+    """工具执行审批决策"""
+    approval_registry.decide(session_id, tool_call_id, approved)
+    return JSONResponse(content={"code": 200, "message": "已通过" if approved else "已拒绝"})
 
 
 # ---- 旧版任务 API（保留向后兼容） ----

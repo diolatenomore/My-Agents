@@ -153,11 +153,12 @@ async def run_agent(
 
 async def run_agent_stream(
     query: str,
+    cancel_event: asyncio.Event,
     history: Optional[list] = None,
     config: Optional[AgentConfig] = None,
     system_prompt: Optional[str] = None,
     tools: Optional[list] = None,
-    cancel_event: Optional[asyncio.Event] = None,
+    session_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """运行 ReAct Agent 循环（流式版本），逐个 yield 事件
 
@@ -165,6 +166,7 @@ async def run_agent_stream(
         - thinking:   模型的思考过程（如 {"type":"thinking","content":"..."}）
         - token:      LLM 生成的可见文本片段（如 {"type":"token","content":"你好"}）
         - tool_call:  模型决定调用工具（如 {"type":"tool_call","name":"list_dir","args":{...}}）
+                      需要审批时额外包含 requires_approval=True 和 tool_call_id
         - tool_result: 工具执行结果（如 {"type":"tool_result","name":"list_dir","result":"..."}）
         - cancelled:  取消信号（如 {"type":"cancelled","content":"", "_messages": 截断后的消息} ）
         - done:       全部完成（如 {"type":"done","content":"最终回复"}，含 "_messages" 供调用者持久化）
@@ -176,6 +178,7 @@ async def run_agent_stream(
         config: Agent 配置
         system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
         tools: 工具列表，不传则使用所有注册工具
+        session_id: 会话 ID，用于审批等待的中断
 
     Yields:
         dict: SSE 兼容的事件字典
@@ -192,7 +195,7 @@ async def run_agent_stream(
         for iteration in range(1, cfg.max_iterations + 1):
 
             # 检查点1：每轮迭代开始前检查取消信号
-            if cancel_event and cancel_event.is_set():
+            if cancel_event.is_set():
                 yield {
                     "type": "cancelled",
                     "content": "",
@@ -221,7 +224,7 @@ async def run_agent_stream(
                 chunk_count += 1
 
                 # 检查点2：每 10 个 chunk 检查一次取消信号
-                if cancel_event and chunk_count % 10 == 0 and cancel_event.is_set():
+                if chunk_count % 10 == 0 and cancel_event.is_set():
                     # 停止流消费，用已累积内容构造部分 assistant 消息
                     msg = {"role": "assistant", "content": full_content, "cancelled": True}
                     if full_reasoning:
@@ -299,12 +302,12 @@ async def run_agent_stream(
                 tool_call_id = tc["id"]
 
                 # 检查点3：工具执行前检查取消信号
-                if cancel_event and cancel_event.is_set():
+                if cancel_event.is_set():
                     # 为剩余未执行的工具调用生成假错误返回
+                    error_result = "工具调用被用户中断"
                     remaining = tool_calls[tool_calls.index(tc):]
                     for remaining_tc in remaining:
                         yield {"type": "tool_call", "name": remaining_tc["name"], "args": remaining_tc["args"]}
-                        error_result = "工具调用被用户中断"
                         yield {"type": "tool_result", "name": remaining_tc["name"], "result": error_result}
                         messages.append({
                             "role": "tool",
@@ -318,7 +321,61 @@ async def run_agent_stream(
                     }
                     return
 
-                yield {"type": "tool_call", "name": tool_name, "args": tool_args}
+                # 检查是否需要用户审批
+                if registry.requires_approval(tool_name):
+                    from src.tools.approval import approval_registry
+                    approval_event = approval_registry.create(session_id, tool_call_id)
+                    yield {
+                        "type": "tool_call",
+                        "name": tool_name,
+                        "args": tool_args,
+                        "requires_approval": True,
+                        "tool_call_id": tool_call_id,
+                    }
+                    # 等待审批或取消（超时 120s 自动拒绝）
+                    wait_tasks = [
+                        asyncio.create_task(approval_event.wait()),
+                        asyncio.create_task(cancel_event.wait()),
+                    ]
+                    done, _ = await asyncio.wait(wait_tasks, timeout=120, return_when=asyncio.FIRST_COMPLETED)
+                    # 取消未完成的任务
+                    for t in wait_tasks:
+                        if not t.done():
+                            t.cancel()
+
+                    # 检查是否是取消信号
+                    if cancel_event.is_set():
+                        approval_registry.clear(session_id, tool_call_id)
+                        error_result = "工具调用被用户中断"
+                        # 当前工具：已 yield tool_call，只需补 tool_result
+                        yield {"type": "tool_result", "name": tool_name, "result": error_result}
+                        messages.append({"role": "tool", "content": error_result, "tool_call_id": tool_call_id})
+                        # 剩余未执行的工具：需要一一配对的 tool_call + tool_result
+                        remaining = tool_calls[tool_calls.index(tc) + 1:]
+                        for remaining_tc in remaining:
+                            yield {"type": "tool_call", "name": remaining_tc["name"], "args": remaining_tc["args"]}
+                            yield {"type": "tool_result", "name": remaining_tc["name"], "result": error_result}
+                            messages.append({
+                                "role": "tool",
+                                "content": error_result,
+                                "tool_call_id": remaining_tc["id"],
+                            })
+                        yield {
+                            "type": "cancelled",
+                            "content": full_content,
+                            "_messages": messages,
+                        }
+                        return
+
+                    approved = approval_registry.get_decision(session_id, tool_call_id)
+                    approval_registry.clear(session_id, tool_call_id)
+                    if not approved:
+                        rejection_msg = "用户拒绝了该工具的执行"
+                        yield {"type": "tool_result", "name": tool_name, "result": rejection_msg}
+                        messages.append({"role": "tool", "content": rejection_msg, "tool_call_id": tool_call_id})
+                        continue  # 跳过执行，继续下一个 tool_call
+                else:
+                    yield {"type": "tool_call", "name": tool_name, "args": tool_args}
 
                 if cfg.verbose:
                     logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")

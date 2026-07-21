@@ -110,4 +110,5 @@ registry.register(
     ),
     handler=execute,
     args_schema=ExecuteInput,
+    requires_approval=True,
 )

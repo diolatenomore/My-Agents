@@ -27,6 +27,13 @@
   .msg.assistant { background: #fff; border: 1px solid #e0e0e0; align-self: flex-start; }
   .msg.system { background: #fff3e0; align-self: center; font-size: 12px; padding: 6px 12px; border-radius: 6px; max-width: 100%; }
   .msg.tool-call { background: #f3e5f5; align-self: flex-start; font-family: monospace; font-size: 13px; }
+  .msg.tool-call.approval-pending { border: 2px solid #ff9800; }
+  .approval-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .approval-actions button { padding: 4px 14px; font-size: 12px; border-radius: 4px; }
+  .approval-actions .approve-btn { background: #2e7d32; }
+  .approval-actions .approve-btn:hover { background: #1b5e20; }
+  .approval-actions .reject-btn { background: #c62828; }
+  .approval-actions .reject-btn:hover { background: #b71c1c; }
   .msg.tool-result { background: #e8f5e9; align-self: flex-start; font-family: monospace; font-size: 13px; }
   .msg .label { font-weight: 600; font-size: 11px; color: #666; margin-bottom: 4px; text-transform: uppercase; }
   .msg .content { white-space: pre-wrap; word-break: break-word; }
@@ -470,9 +477,17 @@ async function send() {
           case 'tool_call':
             label.textContent = `🔧 调用工具: ${parsed.name}`;
             const tcDiv = document.createElement('div');
-            tcDiv.className = 'msg tool-call';
-            tcDiv.innerHTML = `<div class="label">工具调用</div><div class="content">${escapeHtml(parsed.name)}(${escapeHtml(JSON.stringify(parsed.args))})</div>`;
-            messagesEl.insertBefore(tcDiv, assistantDiv);
+            if (parsed.requires_approval) {
+              tcDiv.className = 'msg tool-call approval-pending';
+              tcDiv.innerHTML = `<div class="label">⚠️ 工具调用（需审批）</div><div class="content">${escapeHtml(parsed.name)}(${escapeHtml(JSON.stringify(parsed.args))})</div><div class="approval-actions"><button class="approve-btn">通过</button><button class="reject-btn">拒绝</button></div>`;
+              messagesEl.insertBefore(tcDiv, assistantDiv);
+              tcDiv.querySelector('.approve-btn').onclick = () => decideTool(parsed.tool_call_id, true, tcDiv);
+              tcDiv.querySelector('.reject-btn').onclick = () => decideTool(parsed.tool_call_id, false, tcDiv);
+            } else {
+              tcDiv.className = 'msg tool-call';
+              tcDiv.innerHTML = `<div class="label">工具调用</div><div class="content">${escapeHtml(parsed.name)}(${escapeHtml(JSON.stringify(parsed.args))})</div>`;
+              messagesEl.insertBefore(tcDiv, assistantDiv);
+            }
             scrollBottom();
             break;
 
@@ -578,6 +593,21 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+async function decideTool(toolCallId, approved, cardEl) {
+  const sid = currentSessionId;
+  if (!sid) return;
+  try {
+    await fetch(`/api/tools/decide/${sid}/${toolCallId}?approved=${approved}`, { method: 'POST' });
+    // 隐藏审批按钮，显示决策结果
+    const actions = cardEl.querySelector('.approval-actions');
+    if (actions) {
+      actions.innerHTML = `<span style="font-size:12px;color:${approved ? '#2e7d32' : '#c62828'}">${approved ? '✓ 已通过' : '✗ 已拒绝'}</span>`;
+    }
+  } catch (err) {
+    console.error('审批请求失败:', err);
+  }
 }
 
 async function loadReviewTree(sid) {

@@ -11,11 +11,12 @@ from src.utils.common import logger
 class ToolEntry:
     """Metadata for a single registered tool."""
 
-    def __init__(self, name, description, schema, handler):
+    def __init__(self, name, description, schema, handler, requires_approval=False):
         self.name = name
         self.description = description
         self.schema = schema
         self.handler = handler
+        self.requires_approval = requires_approval
 
 
 def _pydantic_to_openai_params(model: Type[BaseModel]) -> Dict[str, Any]:
@@ -72,6 +73,7 @@ class ToolRegistry:
         handler: Callable,
         parameters: Optional[Dict[str, Any]] = None,
         args_schema: Optional[Type[BaseModel]] = None,
+        requires_approval: bool = False,
     ):
         """注册一个工具
 
@@ -81,6 +83,7 @@ class ToolRegistry:
             handler: 处理函数（同步或异步，接收 **kwargs，返回字符串）
             parameters: OpenAI 格式的 parameters dict（与 args_schema 二选一）
             args_schema: Pydantic BaseModel，自动转为 parameters
+            requires_approval: 执行前是否需要用户审批
         """
         with self._lock:
             if name in self._tools:
@@ -96,12 +99,18 @@ class ToolRegistry:
                 description=description,
                 schema=parameters,
                 handler=handler,
+                requires_approval=requires_approval,
             )
             logger.debug(f"工具已注册: {name}")
 
     def get(self, name: str) -> Optional[ToolEntry]:
         with self._lock:
             return self._tools.get(name)
+
+    def requires_approval(self, name: str) -> bool:
+        """检查工具是否需要用户审批"""
+        entry = self._tools.get(name)
+        return entry.requires_approval if entry else False
 
     def list_tools(self) -> List[str]:
         with self._lock:
