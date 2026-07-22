@@ -295,109 +295,20 @@ async def run_agent_stream(
                 yield {"type": "done", "content": full_content, "_messages": messages}
                 return
 
-            # 执行工具调用
-            for tc in tool_calls:
-                tool_name = tc["name"]
-                tool_args = tc["args"]
-                tool_call_id = tc["id"]
-
-                # 检查点3：工具执行前检查取消信号
-                if cancel_event.is_set():
-                    # 为剩余未执行的工具调用生成假错误返回
-                    error_result = "工具调用被用户中断"
-                    remaining = tool_calls[tool_calls.index(tc):]
-                    for remaining_tc in remaining:
-                        yield {"type": "tool_call", "name": remaining_tc["name"], "args": remaining_tc["args"]}
-                        yield {"type": "tool_result", "name": remaining_tc["name"], "result": error_result}
+            # 执行工具调用（并行，边完成边 yield）
+            async for event in _execute_tool_calls_parallel(
+                tool_calls, session_id, cancel_event, cfg
+            ):
+                if event["type"] == "_tool_results_done":
+                    # 全部执行完成，按原始顺序追加 tool 消息到 messages
+                    for tc, result in zip(event["_tool_calls"], event["_ordered_results"]):
                         messages.append({
                             "role": "tool",
-                            "content": error_result,
-                            "tool_call_id": remaining_tc["id"],
+                            "content": result,
+                            "tool_call_id": tc["id"],
                         })
-                    yield {
-                        "type": "cancelled",
-                        "content": full_content,
-                        "_messages": messages,
-                    }
-                    return
-
-                # 检查是否需要用户审批
-                if registry.requires_approval(tool_name):
-                    from src.tools.approval import approval_registry
-                    approval_event = approval_registry.create(session_id, tool_call_id)
-                    yield {
-                        "type": "tool_call",
-                        "name": tool_name,
-                        "args": tool_args,
-                        "requires_approval": True,
-                        "tool_call_id": tool_call_id,
-                    }
-                    # 等待审批或取消（超时 120s 自动拒绝）
-                    wait_tasks = [
-                        asyncio.create_task(approval_event.wait()),
-                        asyncio.create_task(cancel_event.wait()),
-                    ]
-                    done, _ = await asyncio.wait(wait_tasks, timeout=120, return_when=asyncio.FIRST_COMPLETED)
-                    # 取消未完成的任务
-                    for t in wait_tasks:
-                        if not t.done():
-                            t.cancel()
-
-                    # 检查是否是取消信号
-                    if cancel_event.is_set():
-                        approval_registry.clear(session_id, tool_call_id)
-                        error_result = "工具调用被用户中断"
-                        # 当前工具：已 yield tool_call，只需补 tool_result
-                        yield {"type": "tool_result", "name": tool_name, "result": error_result}
-                        messages.append({"role": "tool", "content": error_result, "tool_call_id": tool_call_id})
-                        # 剩余未执行的工具：需要一一配对的 tool_call + tool_result
-                        remaining = tool_calls[tool_calls.index(tc) + 1:]
-                        for remaining_tc in remaining:
-                            yield {"type": "tool_call", "name": remaining_tc["name"], "args": remaining_tc["args"]}
-                            yield {"type": "tool_result", "name": remaining_tc["name"], "result": error_result}
-                            messages.append({
-                                "role": "tool",
-                                "content": error_result,
-                                "tool_call_id": remaining_tc["id"],
-                            })
-                        yield {
-                            "type": "cancelled",
-                            "content": full_content,
-                            "_messages": messages,
-                        }
-                        return
-
-                    approved = approval_registry.get_decision(session_id, tool_call_id)
-                    approval_registry.clear(session_id, tool_call_id)
-                    if not approved:
-                        rejection_msg = "用户拒绝了该工具的执行"
-                        yield {"type": "tool_result", "name": tool_name, "result": rejection_msg}
-                        messages.append({"role": "tool", "content": rejection_msg, "tool_call_id": tool_call_id})
-                        continue  # 跳过执行，继续下一个 tool_call
-                else:
-                    yield {"type": "tool_call", "name": tool_name, "args": tool_args}
-
-                if cfg.verbose:
-                    logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
-
-                try:
-                    observation = await registry.dispatch(tool_name, tool_args)
-                except Exception as e:
-                    observation = f"工具执行失败: {e}"
-                    logger.error(f"[Agent] 工具 '{tool_name}' 执行失败: {e}")
-
-                if cfg.verbose:
-                    logger.info(
-                        f"[Agent] 工具返回: {str(observation)[:200]}{'...' if len(str(observation)) > 200 else ''}"
-                    )
-
-                yield {"type": "tool_result", "name": tool_name, "result": str(observation)}
-
-                messages.append({
-                    "role": "tool",
-                    "content": str(observation),
-                    "tool_call_id": tool_call_id,
-                })
+                    continue
+                yield event
 
         # 达到最大迭代次数
         # TODO 还需考虑上下文满了的情况
@@ -485,6 +396,126 @@ async def _execute_loop(
     messages.append({"role": "assistant", "content": choice.content or ""})
 
     return iterations, total_tool_calls
+
+
+async def _execute_tool_calls_parallel(
+    tool_calls: list[dict],
+    session_id: str,
+    cancel_event: asyncio.Event,
+    cfg: AgentConfig,
+) -> AsyncGenerator[dict, None]:
+    """并行执行工具调用，先 yield 全部 tool_call，再按完成顺序逐个 yield tool_result"""
+    from src.tools.approval import approval_registry
+
+    # ===== Phase 1: Yield 全部 tool_call 事件 =====
+    for tc in tool_calls:
+        if registry.requires_approval(tc["name"]):
+            yield {
+                "type": "tool_call",
+                "name": tc["name"],
+                "args": tc["args"],
+                "requires_approval": True,
+                "tool_call_id": tc["id"],
+            }
+        else:
+            yield {"type": "tool_call", "name": tc["name"], "args": tc["args"]}
+
+    # ===== Phase 2+3 合并：并发执行 + 边完成边 yield =====
+
+    async def _run_one(index: int, tc: dict) -> tuple[int, dict, str]:
+        """执行单个工具（非审批直接执行，审批等待后执行）"""
+        tool_name = tc["name"]
+        tool_args = tc["args"]
+        tool_call_id = tc["id"]
+
+        if not registry.requires_approval(tool_name):
+            # 非审批工具：直接执行
+            if cfg.verbose:
+                logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
+            try:
+                result = await registry.dispatch(tool_name, tool_args)
+                result_str = str(result)
+            except Exception as e:
+                result_str = f"工具执行失败: {e}"
+                logger.error(f"[Agent] 工具 '{tool_name}' 执行失败: {e}")
+            if cfg.verbose:
+                logger.info(
+                    f"[Agent] 工具返回: {result_str[:200]}{'...' if len(result_str) > 200 else ''}"
+                )
+            return index, tc, result_str
+        else:
+            # 审批工具：等待审批后执行
+            approval_event = approval_registry.create(session_id, tool_call_id)
+            wait_tasks = [
+                asyncio.create_task(approval_event.wait()),
+                asyncio.create_task(cancel_event.wait()),
+            ]
+            _, pending = await asyncio.wait(
+                wait_tasks, timeout=120, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
+
+            if cancel_event.is_set():
+                approval_registry.clear(session_id, tool_call_id)
+                return index, tc, "工具调用被用户中断"
+
+            approved = approval_registry.get_decision(session_id, tool_call_id)
+            approval_registry.clear(session_id, tool_call_id)
+
+            if not approved:
+                return index, tc, "用户拒绝了该工具的执行"
+
+            if cfg.verbose:
+                logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
+            try:
+                result = await registry.dispatch(tool_name, tool_args)
+                result_str = str(result)
+            except Exception as e:
+                result_str = f"工具执行失败: {e}"
+                logger.error(f"[Agent] 工具 '{tool_name}' 执行失败: {e}")
+            if cfg.verbose:
+                logger.info(
+                    f"[Agent] 工具返回: {result_str[:200]}{'...' if len(result_str) > 200 else ''}"
+                )
+            return index, tc, result_str
+
+    # 创建所有 task（立即开始并发执行）
+    tasks = [asyncio.create_task(_run_one(i, tc)) for i, tc in enumerate(tool_calls)]
+
+    # results 收集，供后续按原始顺序构造 messages
+    results: dict[int, str] = {}
+
+    # 边完成边 yield
+    for coro in asyncio.as_completed(tasks):
+        if cancel_event.is_set():
+            break
+
+        try:
+            index, tc, result = await coro
+        except asyncio.CancelledError:
+            continue
+
+        results[index] = result
+        yield {"type": "tool_result", "name": tc["name"], "result": result}
+
+    # 取消未完成的 task
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+
+    # 为被取消而未能完成的工具补充结果
+    for i, tc in enumerate(tool_calls):
+        if i not in results:
+            results[i] = "工具调用被用户中断"
+            yield {"type": "tool_result", "name": tc["name"], "result": results[i]}
+
+    # 按原始顺序返回 results（供调用者构造 messages）
+    yield {
+        "type": "_tool_results_done",
+        "_tool_calls": tool_calls,
+        "_ordered_results": [results[i] for i in range(len(tool_calls))],
+    }
 
 
 def _build_system_prompt(
