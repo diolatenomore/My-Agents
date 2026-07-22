@@ -446,6 +446,18 @@ async def delete_session(session_id: str = Path(...)):
     return JSONResponse(content={"code": 200, "message": f"会话 {session_id} 已删除"})
 
 
+@app.put('/api/sessions/{session_id}/title')
+async def update_session_title(session_id: str = Path(...), title: str = ""):
+    """修改会话标题"""
+    title = title.strip()
+    if not title:
+        return JSONResponse(content={"code": 400, "message": "标题不能为空"}, status_code=400)
+    if len(title) > 50:
+        return JSONResponse(content={"code": 400, "message": "标题不能超过50字"}, status_code=400)
+    await app.state.session_manager.update_title(session_id, title)
+    return JSONResponse(content={"code": 200, "message": "标题已更新"})
+
+
 @app.get('/api/sessions/{session_id}/messages')
 async def get_session_messages(session_id: str = Path(...)):
     """获取会话的消息记录"""

@@ -14,7 +14,11 @@
   .session-item { padding: 10px 12px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; font-size: 13px; }
   .session-item:hover { background: #f0f0f0; }
   .session-item.active { background: #e3f2fd; }
-  .session-item .title { font-weight: 500; color: #333; }
+  .session-item .title-row { display: flex; align-items: center; gap: 6px; }
+  .session-item .title { font-weight: 500; color: #333; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-item .edit-btn { flex-shrink: 0; width: 22px; height: 22px; padding: 0; font-size: 10px; border-radius: 4px; background: transparent; color: #999; border: none; cursor: pointer; line-height: 22px; text-align: center; display: none; }
+  .session-item:hover .edit-btn { display: inline-block; }
+  .session-item .edit-btn:hover { background: #e0e0e0; color: #333; }
   .session-item .meta { font-size: 11px; color: #999; margin-top: 2px; }
   .sidebar-actions { padding: 12px; border-top: 1px solid #eee; display: flex; gap: 8px; }
   .sidebar-actions button { flex: 1; }
@@ -151,6 +155,17 @@
   .skill-modal .modal-footer .skill-toggle.enabled { background: #e8f5e9; color: #2e7d32; border-color: #a5d6a7; }
   .skill-modal .modal-footer .skill-toggle.disabled { background: #ffebee; color: #c62828; border-color: #ef9a9a; }
   .skill-modal .modal-footer .skill-toggle:hover { opacity: 0.85; }
+  .rename-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  .rename-overlay.hidden { display: none; }
+  .rename-dialog { background: #fff; border-radius: 10px; width: 360px; box-shadow: 0 4px 24px rgba(0,0,0,0.18); overflow: hidden; }
+  .rename-dialog .dialog-header { padding: 16px 20px; font-size: 15px; font-weight: 600; border-bottom: 1px solid #eee; }
+  .rename-dialog .dialog-body { padding: 16px 20px; }
+  .rename-dialog .dialog-body input { width: 100%; padding: 8px 12px; font-size: 14px; border: 1px solid #ddd; border-radius: 6px; outline: none; font-family: inherit; }
+  .rename-dialog .dialog-body input:focus { border-color: #1976d2; }
+  .rename-dialog .dialog-footer { padding: 12px 20px; border-top: 1px solid #eee; display: flex; gap: 8px; justify-content: flex-end; }
+  .rename-dialog .dialog-footer button { padding: 6px 20px; font-size: 13px; border-radius: 6px; }
+  .rename-dialog .dialog-footer .cancel-btn { background: #f5f5f5; color: #666; border: 1px solid #ddd; }
+  .rename-dialog .dialog-footer .cancel-btn:hover { background: #e0e0e0; }
 </style>
 </head>
 <body>
@@ -263,11 +278,47 @@ function renderSessionList(sessions) {
     const active = s.session_id === currentSessionId ? 'active' : '';
     const title = s.title || s.session_id.slice(0, 8) + '...';
     const time = s.updated_at ? new Date(s.updated_at).toLocaleString() : '';
-    return `<div class="session-item ${active}" onclick="switchSession('${s.session_id}')">
-      <div class="title">${escapeHtml(title)}</div>
+    return `<div class="session-item ${active}" data-sid="${s.session_id}" onclick="switchSession('${s.session_id}')">
+      <div class="title-row">
+        <span class="title">${escapeHtml(title)}</span>
+        <button class="edit-btn" onclick="event.stopPropagation();openRename('${s.session_id}','${escapeHtml(title).replace(/'/g, "\\'")}')" title="编辑标题">✎</button>
+      </div>
       <div class="meta">${s.message_count} 条消息 · ${time}</div>
     </div>`;
   }).join('');
+}
+
+let renameSessionId = '';
+let renameOrigTitle = '';
+
+function openRename(sid, title) {
+  renameSessionId = sid;
+  renameOrigTitle = title;
+  const input = document.getElementById('renameInput');
+  input.value = title;
+  document.getElementById('renameOverlay').classList.remove('hidden');
+  input.focus();
+  input.select();
+}
+
+function cancelRename() {
+  document.getElementById('renameOverlay').classList.add('hidden');
+  renameSessionId = '';
+}
+
+async function confirmRename() {
+  const newTitle = document.getElementById('renameInput').value.trim();
+  if (!newTitle || newTitle === renameOrigTitle) {
+    cancelRename();
+    return;
+  }
+  try {
+    const res = await fetch(`/api/sessions/${renameSessionId}/title?title=${encodeURIComponent(newTitle)}`, { method: 'PUT' });
+    if (res.ok) {
+      refreshSessions();
+    }
+  } catch {}
+  cancelRename();
 }
 
 async function switchSession(sid) {
@@ -1051,5 +1102,17 @@ if (currentSessionId) {
   loadReviewTree(currentSessionId);
 }
 </script>
+<div class="rename-overlay hidden" id="renameOverlay">
+  <div class="rename-dialog">
+    <div class="dialog-header">修改会话标题</div>
+    <div class="dialog-body">
+      <input type="text" id="renameInput" maxlength="50" placeholder="输入新标题">
+    </div>
+    <div class="dialog-footer">
+      <button class="cancel-btn" onclick="cancelRename()">取消</button>
+      <button onclick="confirmRename()">确认</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
