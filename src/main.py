@@ -29,6 +29,7 @@ from src.agent.react_loop import run_agent, run_agent_stream
 from src.session.cancel import CancelRegistry
 from src.memory.service import get_memory_service
 from src.session.prompt_cache import SystemPromptCache
+from src.session.title_generator import generate_title
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -62,6 +63,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+async def _maybe_generate_title(session_id: str, messages: list, session_manager: SessionManager):
+    """在新会话首轮对话后，异步生成标题（fire-and-forget）"""
+    try:
+        current = await session_manager.get_session(session_id)
+        if current and not current.title:
+            user_msg = next((m["content"] for m in messages if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+            assistant_msg = next((m["content"] for m in messages if m.get("role") == "assistant" and isinstance(m.get("content"), str)), "")
+            if user_msg:
+                title = await generate_title(user_msg, assistant_msg)
+                await session_manager.update_title(session_id, title)
+                logger.info(f"会话标题已生成: {session_id} -> {title}")
+    except Exception as e:
+        logger.error(f"生成标题失败: {e}")
 
 
 @app.get('/')
@@ -135,6 +151,10 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
             asyncio.create_task(
                 get_memory_service().extract_from_messages(session_id, result.messages)
             )
+
+        # Fire-and-forget 生成会话标题（仅新会话首轮）
+        if not history:
+            asyncio.create_task(_maybe_generate_title(session_id, result.messages, session_manager))
 
     return ChatResponse(
         code=200,
@@ -235,6 +255,10 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                 await session_manager.save_messages(session_id, messages)
             except Exception as e:
                 logger.error(f"保存会话消息失败: {e}")
+
+            # Fire-and-forget 生成会话标题（仅新会话首轮）
+            if not history:
+                asyncio.create_task(_maybe_generate_title(session_id, messages, session_manager))
 
         # Fire-and-forget 提取长期记忆（按轮次间隔控制）
         if messages and final_content and get_memory_service().should_extract(session_id):
