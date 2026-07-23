@@ -6,12 +6,39 @@ from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
 
 from openai import AsyncOpenAI
+from openai import (
+    APIError,
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    RateLimitError,
+)
 
 from src.agent.agent_config import AgentConfig
 from src.agent.prompts import DEFAULT_SYSTEM_PROMPT
 from src.skills.loader import build_skills_catalog
 from src.tools.registry import registry
 from src.utils.common import logger
+
+
+def translate_openai_error(e: Exception) -> str:
+    """将 OpenAI SDK 异常翻译为中文可读信息"""
+    if isinstance(e, AuthenticationError):
+        return "API Key 无效或余额不足，请检查模型配置中的 API Key"
+    if isinstance(e, APITimeoutError):
+        return "请求超时，请检查网络连接或 Base URL 是否正确"
+    if isinstance(e, APIConnectionError):
+        return f"无法连接到模型服务 ({e})，请检查 Base URL 是否正确"
+    if isinstance(e, RateLimitError):
+        return "请求频率过高，请稍后重试"
+    if isinstance(e, APIError):
+        msg = str(e)
+        if e.body and isinstance(e.body, dict):
+            msg = e.body.get("message", msg)
+        elif hasattr(e, "message"):
+            msg = e.message
+        return f"模型服务返回错误: {msg}"
+    return str(e)
 
 
 @dataclass
@@ -143,7 +170,10 @@ async def run_agent(
     messages = _build_messages(prompt, history, query)
     client, cfg.model = await model_manager.resolve_model(model_id)
 
-    iterations, total_tool_calls = await _execute_loop(client, cfg, messages, tools)
+    try:
+        iterations, total_tool_calls = await _execute_loop(client, cfg, messages, tools)
+    except Exception as e:
+        raise ValueError(translate_openai_error(e)) from e
 
     # 取最后一条 assistant 消息作为最终回复
     final_content = ""
@@ -346,7 +376,7 @@ async def run_agent_stream(
 
     except Exception as e:
         logger.error(f"[Agent] 流式执行出错: {e}", exc_info=True)
-        yield {"type": "error", "message": str(e)}
+        yield {"type": "error", "message": translate_openai_error(e)}
 
 
 async def _execute_loop(

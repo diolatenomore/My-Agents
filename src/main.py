@@ -199,31 +199,34 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
     """生成 SSE 事件流"""
     from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
     from src.agent.react_loop import _build_system_prompt, _get_memory_block
-    set_current_task_id(session_id)
-    await init_vfs(session_id)
-    history = await session_manager.load_history(session_id)
-
-    # 系统 prompt 冻结逻辑：同一 (model, session) 在 TTL 内复用首个 prompt
-    prompt_cache = app.state.system_prompt_cache
-    frozen_prompt = prompt_cache.get(model_id, session_id)
-    if frozen_prompt:
-        system_prompt = frozen_prompt
-    else:
-        memory_block = _get_memory_block(query)
-        system_prompt = _build_system_prompt(memory_block=memory_block)
-        prompt_cache.set(model_id, session_id, system_prompt)
-
-    # 动态记忆注入 user message（随 query 变化，不碰 system prompt）
-    dynamic_block = get_memory_service().get_dynamic_block(query)
-    augmented_query = f"以下为用户原始输入：\n{query}\n\n{dynamic_block}" if dynamic_block else query
-
-    # 提前通知前端 session_id
-    yield f"event: session_ready\ndata: {json.dumps({'type': 'session_ready', 'session_id': session_id}, ensure_ascii=False)}\n\n"
 
     messages: list = []
     final_content = ""
+    history = None
     cancel_registry = app.state.cancel_registry
+
     try:
+        set_current_task_id(session_id)
+        await init_vfs(session_id)
+        history = await session_manager.load_history(session_id)
+
+        # 系统 prompt 冻结逻辑：同一 (model, session) 在 TTL 内复用首个 prompt
+        prompt_cache = app.state.system_prompt_cache
+        frozen_prompt = prompt_cache.get(model_id, session_id)
+        if frozen_prompt:
+            system_prompt = frozen_prompt
+        else:
+            memory_block = _get_memory_block(query)
+            system_prompt = _build_system_prompt(memory_block=memory_block)
+            prompt_cache.set(model_id, session_id, system_prompt)
+
+        # 动态记忆注入 user message（随 query 变化，不碰 system prompt）
+        dynamic_block = get_memory_service().get_dynamic_block(query)
+        augmented_query = f"以下为用户原始输入：\n{query}\n\n{dynamic_block}" if dynamic_block else query
+
+        # 提前通知前端 session_id
+        yield f"event: session_ready\ndata: {json.dumps({'type': 'session_ready', 'session_id': session_id}, ensure_ascii=False)}\n\n"
+
         async with session_manager.lock(session_id):
             # 注册取消事件
             cancel_event = cancel_registry.create(session_id)

@@ -5,6 +5,7 @@ import re
 import uuid
 from typing import Optional
 
+import httpx
 from openai import AsyncOpenAI
 
 from src.db.sqlite_pool import db_pool
@@ -125,6 +126,9 @@ class ModelManager:
         async with db_pool.get_conn() as conn:
             await conn.execute("DELETE FROM model_configs WHERE id=?", (model_id,))
 
+        # 清理对应的环境变量
+        self._remove_env_var(existing["env_var_name"])
+
         logger.info(f"模型配置已删除: {existing['name']} (id={model_id})")
         return True
 
@@ -151,7 +155,9 @@ class ModelManager:
         if not api_key:
             raise ValueError(f"环境变量 {model_config['env_var_name']} 未设置，请检查 .env 文件")
 
-        return (AsyncOpenAI(base_url=model_config["base_url"], api_key=api_key),
+        # 连接超时 10s，read 超时 120s（兼容思考模式等长时间无输出的场景）
+        timeout = httpx.Timeout(120.0, connect=10.0)
+        return (AsyncOpenAI(base_url=model_config["base_url"], api_key=api_key, timeout=timeout),
                 model_config["model"])
 
     def _write_env_var(self, key: str, value: str):
@@ -174,6 +180,26 @@ class ModelManager:
                         lines.append(line)
         if not found:
             lines.append(f"{key}={value}\n")
+
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+    def _remove_env_var(self, key: str):
+        """从 os.environ 和 .env 文件中移除环境变量"""
+        # 1. 从当前进程移除
+        os.environ.pop(key, None)
+
+        # 2. 从 .env 文件中移除对应行
+        env_path = _env_file_path()
+        if not os.path.exists(env_path):
+            return
+
+        lines = []
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not (stripped.startswith(f"{key}=") or stripped.startswith(f"{key} ")):
+                    lines.append(line)
 
         with open(env_path, "w", encoding="utf-8") as f:
             f.writelines(lines)
