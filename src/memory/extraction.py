@@ -5,7 +5,7 @@ import re
 
 from openai import AsyncOpenAI
 
-from src.config import DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
+from src.agent.model_manager import model_manager
 from src.utils.common import logger
 
 REVIEW_PROMPT = """请回顾以上对话，判断是否有值得保存到长期记忆中的信息。
@@ -44,11 +44,12 @@ _MAX_CHARS = 8000  # 完整对话的最大字符数
 _JSON_PATTERN = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```|(\[[\s\S]*\]\s*$)")
 
 
-async def extract_memories(messages: list[dict]) -> list[dict]:
+async def extract_memories(messages: list[dict], model_id: str) -> list[dict]:
     """审阅完整对话历史，提取记忆。
 
     Args:
         messages: 完整对话消息列表（含 system、user、assistant、tool 等）
+        model_id: 模型配置 ID（必传）
 
     Returns:
         提取到的记忆列表 [{"type": ..., "key": ..., "value": ...}, ...]
@@ -59,9 +60,9 @@ async def extract_memories(messages: list[dict]) -> list[dict]:
     # context = _truncate_messages(messages)
 
     try:
-        client = AsyncOpenAI(base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
+        client, model_name = await model_manager.resolve_model(model_id)
         result = await client.chat.completions.create(
-            model="deepseek-v4-flash",
+            model=model_name,
             messages=[
                 {"role": "system", "content": "你是一个记忆提取系统，善于从对话中提取长期记忆。"},
                 *context,

@@ -155,6 +155,33 @@
   .skill-modal .modal-footer .skill-toggle.enabled { background: #e8f5e9; color: #2e7d32; border-color: #a5d6a7; }
   .skill-modal .modal-footer .skill-toggle.disabled { background: #ffebee; color: #c62828; border-color: #ef9a9a; }
   .skill-modal .modal-footer .skill-toggle:hover { opacity: 0.85; }
+
+  /* 模型管理页面 */
+  .model-page { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .model-page .model-toolbar { padding: 12px 20px; background: #fff; border-bottom: 1px solid #ddd; display: flex; gap: 10px; align-items: center; }
+  .model-page .model-toolbar .model-count { font-size: 13px; color: #666; margin-left: auto; }
+  .model-page .model-list { flex: 1; overflow-y: auto; }
+  .model-row { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid #f5f5f5; }
+  .model-row:hover { background: #fafafa; }
+  .model-row .model-info { flex: 1; min-width: 0; }
+  .model-row .model-name { font-weight: 600; font-size: 14px; color: #333; }
+  .model-row .model-detail { font-size: 12px; color: #666; margin-top: 2px; }
+  .model-row .model-status { flex-shrink: 0; }
+  .model-row .model-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .model-row .model-actions button { padding: 4px 12px; font-size: 11px; border-radius: 4px; }
+  .model-form { padding: 16px 20px; background: #fafafa; border-top: 1px solid #eee; display: none; }
+  .model-form.show { display: block; }
+  .model-form .form-row { display: flex; gap: 10px; margin-bottom: 10px; align-items: center; }
+  .model-form .form-row label { font-size: 13px; color: #333; min-width: 72px; }
+  .model-form .form-row input { flex: 1; padding: 6px 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; outline: none; font-family: inherit; }
+  .model-form .form-row input:focus { border-color: #1976d2; }
+  .model-form .form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .model-form .form-actions button { padding: 6px 20px; font-size: 13px; border-radius: 6px; }
+  .model-form .form-actions .cancel-btn { background: #f5f5f5; color: #666; border: 1px solid #ddd; }
+  .model-form .form-actions .cancel-btn:hover { background: #e0e0e0; }
+  .model-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
+  .model-badge.active { background: #e8f5e9; color: #2e7d32; }
+
   .rename-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; align-items: center; justify-content: center; z-index: 1000; }
   .rename-overlay.hidden { display: none; }
   .rename-dialog { background: #fff; border-radius: 10px; width: 360px; box-shadow: 0 4px 24px rgba(0,0,0,0.18); overflow: hidden; }
@@ -174,6 +201,7 @@
   <div class="sidebar-tabs">
     <button id="tabMemory" onclick="showMemoryPage()">记忆</button>
     <button id="tabSkills" onclick="showSkillsPage()">技能</button>
+    <button id="tabModels" onclick="showModelsPage()">模型</button>
     <button class="active" id="tabChat" onclick="showChatPage()">会话</button>
   </div>
   <div class="session-list" id="sessionList"></div>
@@ -185,7 +213,11 @@
 
 <div class="main">
   <div class="header">
-    <span style="font-weight:600;font-size:14px">当前会话:</span>
+    <span style="font-weight:600;font-size:14px">模型:</span>
+    <select id="modelSelect" style="padding:4px 8px;font-size:13px;border:1px solid #ddd;border-radius:4px;max-width:180px;" onchange="onModelChange()">
+      <option value="">加载中...</option>
+    </select>
+    <span style="font-weight:600;font-size:14px;margin-left:12px">当前会话:</span>
     <span class="sid" id="sessionId">-</span>
     <button id="deleteSession" class="danger" style="padding:4px 12px;font-size:12px">删除</button>
   </div>
@@ -248,11 +280,49 @@
       <div class="modal-footer" id="skillModalFooter"></div>
     </div>
   </div>
+
+  <!-- 模型管理页面 -->
+  <div class="model-page" id="modelPage" style="display:none;">
+    <div class="model-toolbar">
+      <span style="font-weight:600;font-size:14px;">模型管理</span>
+      <button onclick="showModelForm()" style="padding:6px 16px;font-size:12px;">新建模型</button>
+      <span class="model-count" id="modelCount">0 个</span>
+    </div>
+    <div class="model-list" id="modelList">
+      <div class="empty-state">加载中...</div>
+    </div>
+    <div class="model-form" id="modelForm">
+      <input type="hidden" id="editModelId" value="">
+      <div class="form-row">
+        <label>名称</label>
+        <input id="modelFormName" placeholder="如: DeepSeek 生产">
+      </div>
+      <div class="form-row">
+        <label>Base URL</label>
+        <input id="modelFormUrl" placeholder="如: https://api.deepseek.com/v1">
+      </div>
+      <div class="form-row">
+        <label>模型</label>
+        <input id="modelFormModel" placeholder="如: deepseek-v4-flash">
+      </div>
+      <div class="form-row">
+        <label>API Key</label>
+        <input id="modelFormKey" type="password" placeholder="输入 API Key">
+        <button onclick="toggleApiKeyVisibility()" style="padding:6px 10px;font-size:11px;background:none;color:#666;border:1px solid #ddd;border-radius:4px;cursor:pointer;">显示</button>
+      </div>
+      <div class="form-actions">
+        <button class="cancel-btn" onclick="hideModelForm()">取消</button>
+        <button onclick="saveModel()">保存</button>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script>
 // ============ 状态 ============
 let currentSessionId = localStorage.getItem('session_id') || '';
+let selectedModelId = localStorage.getItem('selected_model_id') || '';
 let isStreaming = false;
 let eventSource = null;
 let abortController = null;
@@ -434,6 +504,7 @@ async function send() {
   const sessionId = currentSessionId || '';
   const body = { query: text };
   if (sessionId) body.session_id = sessionId;
+  if (selectedModelId) body.model_id = selectedModelId;
 
   // 显示 streaming 占位
   const assistantDiv = document.createElement('div');
@@ -1095,11 +1166,233 @@ document.getElementById('deleteSession').addEventListener('click', deleteCurrent
 // ============ 初始化 ============
 
 refreshSessions();
+loadModelSelector();
 
 if (currentSessionId) {
   sessionIdEl.textContent = currentSessionId;
   loadSessionMessages(currentSessionId);
   loadReviewTree(currentSessionId);
+}
+
+// ========== 模型管理 ==========
+
+async function loadModels() {
+  try {
+    const res = await fetch('/api/models');
+    const data = await res.json();
+    renderModelList(data);
+    document.getElementById('modelCount').textContent = data.length + ' 个';
+  } catch {}
+}
+
+function renderModelList(models) {
+  const el = document.getElementById('modelList');
+  if (!models || models.length === 0) {
+    el.innerHTML = '<div class="empty-state">暂无模型配置</div>';
+    return;
+  }
+  el.innerHTML = models.map(m => `
+    <div class="model-row">
+      <div class="model-info">
+        <div class="model-name">${escapeHtml(m.name)}</div>
+        <div class="model-detail">${escapeHtml(m.model)} · ${escapeHtml(m.base_url)}</div>
+      </div>
+      <div class="model-status">
+        <span class="model-badge active">活跃</span>
+      </div>
+      <div class="model-actions">
+        <button class="edit-btn" onclick="editModel('${m.id}')">编辑</button>
+        <button class="del-btn" onclick="deleteModel('${m.id}')">删除</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function loadModelSelector() {
+  try {
+    const res = await fetch('/api/models');
+    const models = await res.json();
+    const sel = document.getElementById('modelSelect');
+    sel.innerHTML = models.map(m =>
+      `<option value="${m.id}" ${m.id === selectedModelId ? 'selected' : ''}>${escapeHtml(m.name)} (${escapeHtml(m.model)})</option>`
+    ).join('');
+    if (models.length === 0) {
+      sel.innerHTML = '<option value="">无可用模型，请先在模型管理中配置</option>';
+      selectedModelId = '';
+      sendBtn.disabled = true;
+      sendBtn.title = '请先在模型管理中配置模型';
+    } else if (!selectedModelId || !models.find(m => m.id === selectedModelId)) {
+      // 未选择或已选模型已被删除，自动选第一个
+      selectedModelId = models[0].id;
+      sel.value = selectedModelId;
+      localStorage.setItem('selected_model_id', selectedModelId);
+      sendBtn.disabled = false;
+      sendBtn.title = '';
+    } else {
+      sendBtn.disabled = false;
+      sendBtn.title = '';
+    }
+  } catch {
+    document.getElementById('modelSelect').innerHTML = '<option value="">加载失败</option>';
+    sendBtn.disabled = true;
+  }
+}
+
+function onModelChange() {
+  selectedModelId = document.getElementById('modelSelect').value;
+  localStorage.setItem('selected_model_id', selectedModelId);
+  if (selectedModelId) {
+    sendBtn.disabled = false;
+    sendBtn.title = '';
+  } else {
+    sendBtn.disabled = true;
+    sendBtn.title = '请选择一个模型';
+  }
+}
+
+async function showModelsPage() {
+  setActiveTab('tabModels');
+  document.getElementById('modelPage').style.display = 'flex';
+  document.getElementById('memoryPage').style.display = 'none';
+  document.getElementById('skillPage').style.display = 'none';
+  document.getElementById('messages').style.display = 'none';
+  await loadModels();
+}
+
+function showModelForm(model) {
+  const form = document.getElementById('modelForm');
+  form.classList.add('show');
+  if (model) {
+    document.getElementById('editModelId').value = model.id;
+    document.getElementById('modelFormName').value = model.name;
+    document.getElementById('modelFormUrl').value = model.base_url;
+    document.getElementById('modelFormModel').value = model.model;
+    document.getElementById('modelFormKey').value = '';
+  } else {
+    document.getElementById('editModelId').value = '';
+    document.getElementById('modelFormName').value = '';
+    document.getElementById('modelFormUrl').value = '';
+    document.getElementById('modelFormModel').value = '';
+    document.getElementById('modelFormKey').value = '';
+  }
+}
+
+function hideModelForm() {
+  document.getElementById('modelForm').classList.remove('show');
+  document.getElementById('editModelId').value = '';
+}
+
+async function saveModel() {
+  const editId = document.getElementById('editModelId').value;
+  const name = document.getElementById('modelFormName').value.trim();
+  const base_url = document.getElementById('modelFormUrl').value.trim();
+  const model = document.getElementById('modelFormModel').value.trim();
+  const api_key = document.getElementById('modelFormKey').value.trim();
+
+  if (!name || !base_url || !model || !api_key) {
+    alert('所有字段都不能为空');
+    return;
+  }
+
+  try {
+    let res;
+    if (editId) {
+      res = await fetch(`/api/models/${editId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, base_url, model, api_key }),
+      });
+    } else {
+      res = await fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, base_url, model, api_key }),
+      });
+    }
+    const result = await res.json();
+    if (result.code === 200) {
+      hideModelForm();
+      await loadModels();
+      await loadModelSelector();
+    } else {
+      alert(result.message || '操作失败');
+    }
+  } catch (err) {
+    alert('网络错误: ' + err.message);
+  }
+}
+
+async function editModel(id) {
+  try {
+    const res = await fetch('/api/models');
+    const models = await res.json();
+    const model = models.find(m => m.id === id);
+    if (model) showModelForm(model);
+  } catch (err) {
+    alert('获取模型信息失败');
+  }
+}
+
+async function deleteModel(id) {
+  if (!confirm('确定删除该模型配置？')) return;
+  try {
+    const res = await fetch(`/api/models/${id}`, { method: 'DELETE' });
+    const result = await res.json();
+    if (result.code === 200) {
+      await loadModels();
+      await loadModelSelector();
+    } else {
+      alert(result.message || '删除失败');
+    }
+  } catch (err) {
+    alert('网络错误: ' + err.message);
+  }
+}
+
+function toggleApiKeyVisibility() {
+  const input = document.getElementById('modelFormKey');
+  const btn = input.nextElementSibling;
+  if (input.type === 'password') {
+    input.type = 'text';
+    btn.textContent = '隐藏';
+  } else {
+    input.type = 'password';
+    btn.textContent = '显示';
+  }
+}
+
+function setActiveTab(tabId) {
+  document.querySelectorAll('.sidebar-tabs button').forEach(b => b.classList.remove('active'));
+  document.getElementById(tabId).classList.add('active');
+}
+
+// Override existing show functions to work with model page
+const origShowMemoryPage = showMemoryPage;
+const origShowSkillsPage = showSkillsPage;
+const origShowChatPage = showChatPage;
+
+showMemoryPage = function() {
+  setActiveTab('tabMemory');
+  document.getElementById('modelPage').style.display = 'none';
+  document.getElementById('skillPage').style.display = 'none';
+  origShowMemoryPage();
+}
+
+showSkillsPage = function() {
+  setActiveTab('tabSkills');
+  document.getElementById('modelPage').style.display = 'none';
+  document.getElementById('memoryPage').style.display = 'none';
+  origShowSkillsPage();
+}
+
+showChatPage = function() {
+  setActiveTab('tabChat');
+  document.getElementById('modelPage').style.display = 'none';
+  document.getElementById('memoryPage').style.display = 'none';
+  document.getElementById('skillPage').style.display = 'none';
+  document.getElementById('messages').style.display = 'flex';
+  loadModelSelector();  // 每次切回聊天页刷新模型列表
+  origShowChatPage();
 }
 </script>
 <div class="rename-overlay hidden" id="renameOverlay">

@@ -22,10 +22,12 @@ from src.models.http_dtos import (
     GetTaskStatusResponse, TaskChangeResponse,
     UpdateTaskPriorityRequest, GetStatsResponse, TaskManagerStatus,
     UpdateMemoryRequest,
+    CreateModelRequest, UpdateModelRequest, ModelConfigDTO,
 )
 from src.tools.loader import discover_tools
 from src.tools.approval import approval_registry
 from src.agent.react_loop import run_agent, run_agent_stream
+from src.agent.model_manager import model_manager
 from src.session.cancel import CancelRegistry
 from src.memory.service import get_memory_service
 from src.session.prompt_cache import SystemPromptCache
@@ -48,6 +50,9 @@ async def lifespan(app: FastAPI):
     # 初始化 system prompt 冻结缓存
     app.state.system_prompt_cache = SystemPromptCache()
 
+    # 初始化模型管理器（加载 .env + 自动迁移默认模型）
+    await model_manager.init_models()
+
     try:
         yield
     finally:
@@ -65,7 +70,7 @@ app.add_middleware(
 )
 
 
-async def _maybe_generate_title(session_id: str, messages: list, session_manager: SessionManager):
+async def _maybe_generate_title(session_id: str, messages: list, session_manager: SessionManager, model_id: str):
     """在新会话首轮对话后，异步生成标题（fire-and-forget）"""
     try:
         current = await session_manager.get_session(session_id)
@@ -73,7 +78,7 @@ async def _maybe_generate_title(session_id: str, messages: list, session_manager
             user_msg = next((m["content"] for m in messages if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
             assistant_msg = next((m["content"] for m in messages if m.get("role") == "assistant" and isinstance(m.get("content"), str)), "")
             if user_msg:
-                title = await generate_title(user_msg, assistant_msg)
+                title = await generate_title(user_msg, assistant_msg, model_id)
                 await session_manager.update_title(session_id, title)
                 logger.info(f"会话标题已生成: {session_id} -> {title}")
     except Exception as e:
@@ -93,9 +98,13 @@ async def chat(chat_request: ChatRequest, request: Request):
     query = chat_request.query
     if not query or query.strip() == "":
         return ChatResponse(code=401, message="参数不能为空", type="error")
+    if not chat_request.model_id:
+        return ChatResponse(code=402, message="未指定模型，请先在模型管理中添加并选择模型", type="error")
 
     try:
         return await _new_chat(chat_request, request.app.state.session_manager)
+    except ValueError as e:
+        return ChatResponse(code=402, message=str(e), type="error")
     except Exception as e:
         logger.error(e)
         return ChatResponse(code=500, message="服务端出错", type="error")
@@ -104,21 +113,20 @@ async def chat(chat_request: ChatRequest, request: Request):
 async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) -> ChatResponse:
     """新 Agent 循环（非流式），带 session 管理"""
     from src.agent.react_loop import _build_system_prompt, _get_memory_block
-    from src.config import MODEL
 
     query = chat_request.query
     session_id = chat_request.session_id or str(uuid.uuid4())
+    model_id = chat_request.model_id
 
     # 系统 prompt 冻结逻辑（与流式路径一致）
     prompt_cache = app.state.system_prompt_cache
-    model_name = MODEL
-    frozen_prompt = prompt_cache.get(model_name, session_id)
+    frozen_prompt = prompt_cache.get(model_id, session_id)
     if frozen_prompt:
         system_prompt = frozen_prompt
     else:
         memory_block = _get_memory_block(query)
         system_prompt = _build_system_prompt(memory_block=memory_block)
-        prompt_cache.set(model_name, session_id, system_prompt)
+        prompt_cache.set(model_id, session_id, system_prompt)
 
     # 动态记忆注入 user message（随 query 变化，不碰 system prompt）
     dynamic_block = get_memory_service().get_dynamic_block(query)
@@ -133,7 +141,7 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
         await init_vfs(session_id)
         try:
             history = await session_manager.load_history(session_id)
-            result = await run_agent(augmented_query, history=history, system_prompt=system_prompt)
+            result = await run_agent(augmented_query, history=history, system_prompt=system_prompt, model_id=model_id)
 
             # 如果有文件修改，处理 merge 结果，写入数据库
             from src.vfs.diff_table import DiffTable
@@ -149,12 +157,12 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
         # Fire-and-forget 提取长期记忆（按轮次间隔控制）
         if get_memory_service().should_extract(session_id):
             asyncio.create_task(
-                get_memory_service().extract_from_messages(session_id, result.messages)
+                get_memory_service().extract_from_messages(session_id, result.messages, model_id)
             )
 
         # Fire-and-forget 生成会话标题（仅新会话首轮）
         if not history:
-            asyncio.create_task(_maybe_generate_title(session_id, result.messages, session_manager))
+            asyncio.create_task(_maybe_generate_title(session_id, result.messages, session_manager, model_id))
 
     return ChatResponse(
         code=200,
@@ -171,11 +179,13 @@ async def chat_stream(chat_request: ChatRequest):
     query = chat_request.query
     if not query or query.strip() == "":
         return ChatResponse(code=401, message="参数不能为空", type="error")
+    if not chat_request.model_id:
+        return ChatResponse(code=402, message="未指定模型，请先在模型管理中添加并选择模型", type="error")
 
     session_id = chat_request.session_id or str(uuid.uuid4())
 
     return StreamingResponse(
-        _stream_events(query, session_id, app.state.session_manager),
+        _stream_events(query, session_id, app.state.session_manager, chat_request.model_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -185,25 +195,23 @@ async def chat_stream(chat_request: ChatRequest):
     )
 
 
-async def _stream_events(query: str, session_id: str, session_manager: SessionManager):
+async def _stream_events(query: str, session_id: str, session_manager: SessionManager, model_id: str):
     """生成 SSE 事件流"""
     from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
     from src.agent.react_loop import _build_system_prompt, _get_memory_block
-    from src.config import MODEL
     set_current_task_id(session_id)
     await init_vfs(session_id)
     history = await session_manager.load_history(session_id)
 
     # 系统 prompt 冻结逻辑：同一 (model, session) 在 TTL 内复用首个 prompt
     prompt_cache = app.state.system_prompt_cache
-    model_name = MODEL  # TODO 后续前端加上模型配置
-    frozen_prompt = prompt_cache.get(model_name, session_id)
+    frozen_prompt = prompt_cache.get(model_id, session_id)
     if frozen_prompt:
         system_prompt = frozen_prompt
     else:
         memory_block = _get_memory_block(query)
         system_prompt = _build_system_prompt(memory_block=memory_block)
-        prompt_cache.set(model_name, session_id, system_prompt)
+        prompt_cache.set(model_id, session_id, system_prompt)
 
     # 动态记忆注入 user message（随 query 变化，不碰 system prompt）
     dynamic_block = get_memory_service().get_dynamic_block(query)
@@ -226,6 +234,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                 history=history,
                 system_prompt=system_prompt,
                 session_id=session_id,
+                model_id=model_id,
             ):
                 # TODO 考虑中断之后vfs的处理
                 if event["type"] == "cancelled":
@@ -258,12 +267,12 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
 
             # Fire-and-forget 生成会话标题（仅新会话首轮）
             if not history:
-                asyncio.create_task(_maybe_generate_title(session_id, messages, session_manager))
+                asyncio.create_task(_maybe_generate_title(session_id, messages, session_manager, model_id))
 
         # Fire-and-forget 提取长期记忆（按轮次间隔控制）
         if messages and final_content and get_memory_service().should_extract(session_id):
             asyncio.create_task(
-                get_memory_service().extract_from_messages(session_id, messages)
+                get_memory_service().extract_from_messages(session_id, messages, model_id)
             )
 
 
@@ -619,6 +628,75 @@ def _sanitize_dirname(name: str) -> str:
     name = re.sub(r'[<>:"/\\|?*\s]+', '-', name)
     name = name.strip('-').lower()
     return name or "unnamed-skill"
+
+
+# ========== 模型配置管理 API ==========
+
+@app.get('/api/models')
+async def list_models():
+    """列出所有模型配置（不含 api_key）"""
+    models = await model_manager.list_models()
+    return JSONResponse(content=[
+        ModelConfigDTO(**m).model_dump() for m in models
+    ])
+
+
+@app.post('/api/models')
+async def create_model(req: CreateModelRequest):
+    """创建新模型配置"""
+    if not req.name.strip():
+        return JSONResponse(content={"code": 400, "message": "模型名称不能为空"}, status_code=400)
+    if not req.base_url.strip():
+        return JSONResponse(content={"code": 400, "message": "Base URL 不能为空"}, status_code=400)
+    if not req.model.strip():
+        return JSONResponse(content={"code": 400, "message": "模型标识不能为空"}, status_code=400)
+    if not req.api_key.strip():
+        return JSONResponse(content={"code": 400, "message": "API Key 不能为空"}, status_code=400)
+
+    try:
+        result = await model_manager.create_model(
+            name=req.name.strip(),
+            base_url=req.base_url.strip(),
+            model=req.model.strip(),
+            api_key=req.api_key.strip(),
+        )
+        return JSONResponse(content={"code": 200, "message": "创建成功", "data": ModelConfigDTO(**result).model_dump()})
+    except Exception as e:
+        return JSONResponse(content={"code": 500, "message": f"创建失败: {str(e)}"}, status_code=500)
+
+
+@app.put('/api/models/{model_id}')
+async def update_model(model_id: str, req: UpdateModelRequest):
+    """更新模型配置"""
+    existing = await model_manager.get_model(model_id)
+    if not existing:
+        return JSONResponse(content={"code": 404, "message": "模型配置不存在"}, status_code=404)
+
+    try:
+        result = await model_manager.update_model(
+            model_id=model_id,
+            name=req.name.strip() if req.name else None,
+            base_url=req.base_url.strip() if req.base_url else None,
+            model=req.model.strip() if req.model else None,
+            api_key=req.api_key.strip() if req.api_key else None,
+        )
+        if not result:
+            return JSONResponse(content={"code": 404, "message": "模型配置不存在"}, status_code=404)
+        return JSONResponse(content={"code": 200, "message": "更新成功", "data": ModelConfigDTO(**result).model_dump()})
+    except Exception as e:
+        return JSONResponse(content={"code": 500, "message": f"更新失败: {str(e)}"}, status_code=500)
+
+
+@app.delete('/api/models/{model_id}')
+async def delete_model(model_id: str):
+    """删除模型配置"""
+    try:
+        ok = await model_manager.delete_model(model_id)
+        if not ok:
+            return JSONResponse(content={"code": 404, "message": "模型配置不存在"}, status_code=404)
+        return JSONResponse(content={"code": 200, "message": "删除成功"})
+    except Exception as e:
+        return JSONResponse(content={"code": 500, "message": f"删除失败: {str(e)}"}, status_code=500)
 
 
 if __name__ == '__main__':

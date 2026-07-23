@@ -9,7 +9,6 @@ from openai import AsyncOpenAI
 
 from src.agent.agent_config import AgentConfig
 from src.agent.prompts import DEFAULT_SYSTEM_PROMPT
-from src.config import DEEPSEEK_BASE_URL, DEEPSEEK_API_KEY
 from src.skills.loader import build_skills_catalog
 from src.tools.registry import registry
 from src.utils.common import logger
@@ -73,9 +72,9 @@ def _from_openai_tool_calls(openai_tool_calls: list) -> list[dict]:
     return result
 
 
-def _create_client() -> AsyncOpenAI:
+def _create_client(base_url: str, api_key: str) -> AsyncOpenAI:
     """创建 AsyncOpenAI 客户端"""
-    return AsyncOpenAI(base_url=DEEPSEEK_BASE_URL, api_key=DEEPSEEK_API_KEY)
+    return AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 
 def _build_request_kwargs(cfg: AgentConfig) -> dict:
@@ -113,6 +112,7 @@ async def run_agent(
     config: Optional[AgentConfig] = None,
     system_prompt: Optional[str] = None,
     tools: Optional[list] = None,
+    model_id: str = "",
 ) -> AgentResult:
     """运行 ReAct Agent 循环（非流式）
 
@@ -122,17 +122,26 @@ async def run_agent(
         config: Agent 配置
         system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
         tools: 工具列表，不传则使用所有注册工具
+        model_id: 模型配置 ID（必传）
 
     Returns:
         AgentResult
+
+    Raises:
+        ValueError: model_id 为空或模型不存在
     """
+    if not model_id:
+        raise ValueError("未指定模型，请先在模型管理中添加并选择模型")
+
+    from src.agent.model_manager import model_manager
+
     cfg = config or AgentConfig()
     tools = tools or registry.get_all_schemas()
     memory_block = _get_memory_block(query)
     prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
 
     messages = _build_messages(prompt, history, query)
-    client = _create_client()
+    client, cfg.model = await model_manager.resolve_model(model_id)
 
     iterations, total_tool_calls = await _execute_loop(client, cfg, messages, tools)
 
@@ -159,6 +168,7 @@ async def run_agent_stream(
     system_prompt: Optional[str] = None,
     tools: Optional[list] = None,
     session_id: str = "",
+    model_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """运行 ReAct Agent 循环（流式版本），逐个 yield 事件
 
@@ -179,17 +189,26 @@ async def run_agent_stream(
         system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
         tools: 工具列表，不传则使用所有注册工具
         session_id: 会话 ID，用于审批等待的中断
+        model_id: 模型配置 ID（必传）
 
     Yields:
         dict: SSE 兼容的事件字典
+
+    Raises:
+        ValueError: model_id 为空或模型不存在
     """
+    if not model_id:
+        raise ValueError("未指定模型，请先在模型管理中添加并选择模型")
+
+    from src.agent.model_manager import model_manager
+
     cfg = config or AgentConfig()
     tools = tools or registry.get_all_schemas()
     memory_block = _get_memory_block(query)
     prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
 
     messages = _build_messages(prompt, history, query)
-    client = _create_client()
+    client, cfg.model = await model_manager.resolve_model(model_id)
 
     try:
         for iteration in range(1, cfg.max_iterations + 1):

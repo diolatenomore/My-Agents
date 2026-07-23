@@ -37,7 +37,7 @@ class MemoryService:
         return True
 
     async def extract_from_messages(
-        self, session_id: str, messages: list[dict]
+        self, session_id: str, messages: list[dict], model_id: str
     ) -> None:
         """审阅完整对话历史，提取记忆并写入 ChromaDB（fire-and-forget）。
 
@@ -48,7 +48,7 @@ class MemoryService:
             return
 
         try:
-            items = await extract_memories(messages)
+            items = await extract_memories(messages, model_id)
             if not items:
                 return
 

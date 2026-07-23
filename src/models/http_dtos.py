@@ -8,6 +8,7 @@ from src.models.task import Priority
 class ChatRequest(BaseModel):
     query: str
     session_id: Optional[str] = None  # 前端传，不传则后端生成
+    model_id: Optional[str] = None  # 模型配置 ID，不传则使用默认模型
 
 
 class ChatResponse(BaseModel):
@@ -66,3 +67,30 @@ class MemoryItemDTO(BaseModel):
 class UpdateMemoryRequest(BaseModel):
     value: str
     key: str = ""
+
+
+# ========== 模型配置 DTO ==========
+
+class CreateModelRequest(BaseModel):
+    name: str
+    base_url: str
+    model: str
+    api_key: str
+
+
+class UpdateModelRequest(BaseModel):
+    name: Optional[str] = None
+    base_url: Optional[str] = None
+    model: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+class ModelConfigDTO(BaseModel):
+    id: str
+    name: str
+    base_url: str
+    model: str
+    env_var_name: str
+    is_active: int = 1
+    created_at: str = ""
+    updated_at: str = ""

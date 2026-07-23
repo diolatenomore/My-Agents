@@ -113,4 +113,18 @@ async def init_db():
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_session_messages_sid ON session_messages(session_id)")
 
+        # 模型配置表
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS model_configs (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                model TEXT NOT NULL,
+                env_var_name TEXT NOT NULL UNIQUE,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+
     logger.info("数据库所有表初始化完成")
