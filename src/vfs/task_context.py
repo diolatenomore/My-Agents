@@ -102,6 +102,12 @@ def get_copy_mapping() -> CopyMapping:
     return ctx.copy_mapping
 
 
+def get_vfs_lock() -> asyncio.Lock:
+    """获取当前协程对应 task 的 VFS 写操作锁，用于保证并发安全"""
+    task_id = get_current_task_id()
+    return _get_or_create_lock(task_id)
+
+
 async def clean_vfs():
     """减少当前协程对应 task 的 VFS 引用计数，降至 0 才真正清理"""
     task_id = get_current_task_id()
