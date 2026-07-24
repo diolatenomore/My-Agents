@@ -74,7 +74,7 @@ class AsyncSqlitePool:
         try:
             yield conn
             await conn.commit()
-        except Exception as e:
+        except BaseException as e:
             await conn.rollback()
             logger.error(f"操作数据库异常：{e}")
             raise e  # 传递异常给调用者
