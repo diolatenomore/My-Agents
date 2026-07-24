@@ -239,14 +239,10 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                 session_id=session_id,
                 model_id=model_id,
             ):
-                # TODO 考虑中断之后vfs的处理
-                if event["type"] == "cancelled":
+                if event["type"] in ("cancelled", "done"):
                     messages = event.pop("_messages", [])
                     final_content = event.get("content", "")
-                elif event["type"] == "done":
-                    messages = event.pop("_messages", [])
-                    final_content = event.get("content", "")
-                    # 在 done 事件中嵌入审批树
+                    # 检查是否有未审批的 VFS 变更，嵌入审批树
                     from src.vfs.diff_table import DiffTable
                     from src.vfs.review_manager import ReviewManager
                     if await DiffTable.has_unreviewed(session_id):
