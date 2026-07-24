@@ -34,7 +34,7 @@ class CopyMapping:
         self.file_reverse: Dict[str, str] = {}  # target_path -> source_path
         self.dir_reverse: Dict[str, str] = {}  # target_dir -> source_dir
 
-    async def register(self, source_path: str, target_path: str):
+    async def register(self, source_path: str, target_path: str, _conn: aiosqlite.Connection):
         """注册复制记录"""
         # 更新缓存
         self.registered_num[source_path] = self.registered_num.get(source_path, 0) + 1
@@ -42,27 +42,25 @@ class CopyMapping:
 
         # 写入到数据库
         try:
-            async with db_pool.get_conn() as conn:
-                await conn.execute(
-                    "INSERT INTO copy_records (task_id, source_path, target_path, is_copied, is_dir) VALUES (?, ?, ?, ?, ?)",
-                    (self.task_id, source_path, target_path, 0, False),
-                )
+            await _conn.execute(
+                "INSERT INTO copy_records (task_id, source_path, target_path, is_copied, is_dir) VALUES (?, ?, ?, ?, ?)",
+                (self.task_id, source_path, target_path, 0, False),
+            )
         except Exception as e:
             logger.error(f"写入复制记录失败: {e}")
         logger.debug(f"注册文件复制记录，从{source_path}到{target_path}")
 
-    async def register_dir(self, source_path: str, target_path: str):
+    async def register_dir(self, source_path: str, target_path: str, _conn: aiosqlite.Connection):
         """注册目录映射"""
         self.dir_mapping[source_path] = target_path
         self.dir_reverse[target_path] = source_path
 
         # 写入到数据库
         try:
-            async with db_pool.get_conn() as conn:
-                await conn.execute(
-                    "INSERT INTO copy_records (task_id, source_path, target_path, is_copied, is_dir) VALUES (?, ?, ?, ?, ?)",
-                    (self.task_id, source_path, target_path, 0, True),
-                )
+            await _conn.execute(
+                "INSERT INTO copy_records (task_id, source_path, target_path, is_copied, is_dir) VALUES (?, ?, ?, ?, ?)",
+                (self.task_id, source_path, target_path, 0, True),
+            )
         except Exception as e:
             logger.error(f"写入目录复制记录失败: {e}")
         logger.debug(f"注册目录复制记录，从{source_path}到{target_path}")
@@ -85,7 +83,7 @@ class CopyMapping:
         # 已被拷贝数与总数不一致则返回true
         return copied_num != registered_num
 
-    async def mark_copied(self, source_path: str, _conn: aiosqlite.Connection = None):
+    async def mark_copied(self, source_path: str, _conn: aiosqlite.Connection):
         """
         拷贝所有未被拷贝的文件并修改标记
         :param _conn: 审批阶段注入的数据库连接，用于保持同一事务
@@ -110,20 +108,12 @@ class CopyMapping:
         # 更新数据库
         if update_ids:
             try:
-                if _conn is None:
-                    async with db_pool.get_conn() as conn:
-                        # 更新数据库，标记该条记录已完成复制
-                        for update_id in update_ids:
-                            await conn.execute(
-                                "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                                (update_id,),
-                            )
-                else:
-                    for update_id in update_ids:
-                        await _conn.execute(
-                            "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                            (update_id,),
-                        )
+                # 更新数据库，标记该条记录已完成复制
+                for update_id in update_ids:
+                    await _conn.execute(
+                        "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (update_id,),
+                    )
             except Exception as e:
                 logger.error(f"标记复制完成失败: {e}")
 
@@ -145,7 +135,7 @@ class CopyMapping:
         """判断目录是否需要被拷贝"""
         return source_path in self.dir_mapping.keys()
 
-    async def mark_copied_dir(self, source_path: str, _conn: aiosqlite.Connection = None):
+    async def mark_copied_dir(self, source_path: str, _conn: aiosqlite.Connection):
         """
         拷贝所有该目录下的未被拷贝的文件并修改标记
         :param _conn: 审批阶段注入的数据库连接，用于保持同一事务
@@ -177,26 +167,18 @@ class CopyMapping:
                 dir_paths_to_update.append(dir_source_path)
 
         try:
-            if _conn is None:
-                async with db_pool.get_conn() as conn:
-                    # 更新所有目录复制记录，标记为已完成复制
-                    for dir_path in dir_paths_to_update:
-                        await conn.execute(
-                            "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ? AND is_dir = 1",
-                            (self.task_id, dir_path),
-                        )
-            else:
-                for dir_path in dir_paths_to_update:
-                    await _conn.execute(
-                        "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ? AND is_dir = 1",
-                        (self.task_id, dir_path),
-                    )
+            # 更新所有目录复制记录，标记为已完成复制
+            for dir_path in dir_paths_to_update:
+                await _conn.execute(
+                    "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ? AND is_dir = 1",
+                    (self.task_id, dir_path),
+                )
         except Exception as e:
             logger.error(f"标记目录复制完成失败: {e}")
 
         logger.debug(f"目录{source_path}发生修改，触发拷贝")
 
-    async def copy_if_need(self, target_path: str, _conn: aiosqlite.Connection = None):
+    async def copy_if_need(self, target_path: str, _conn: aiosqlite.Connection):
         """
         判断target_path是否需要拷贝，如果是，拷贝并修改标记。
         :param _conn: 审批阶段注入的数据库连接，用于保持同一事务
@@ -225,18 +207,11 @@ class CopyMapping:
 
             # 更新数据库中的字段
             try:
-                if _conn is None:
-                    async with db_pool.get_conn() as conn:
-                        # 更新数据库，标记该条记录已完成复制
-                        await conn.execute(
-                            "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ? AND is_copied = 0",
-                            (self.task_id, target_path),
-                        )
-                else:
-                    await _conn.execute(
-                        "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ? AND is_copied = 0",
-                        (self.task_id, target_path),
-                    )
+                # 更新数据库，标记该条记录已完成复制
+                await _conn.execute(
+                    "UPDATE copy_records SET is_copied = 1, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ? AND is_copied = 0",
+                    (self.task_id, target_path),
+                )
             except Exception as e:
                 logger.error(f"标记复制完成失败: {e}")
 
@@ -262,7 +237,7 @@ class CopyMapping:
                     # 结束
                     break
 
-    async def rename(self, old_path: str, new_path: str, _conn: aiosqlite.Connection = None):
+    async def rename(self, old_path: str, new_path: str, _conn: aiosqlite.Connection):
         """修改映射"""
 
         # 如果old_path作为source_path，则更新缓存
@@ -278,26 +253,22 @@ class CopyMapping:
 
         # 更新数据库，把old_path（source_path/target_path）替换为new_path
         try:
-            async with db_pool.get_conn() as conn:
-                # 注入conn，与审批时同一事务执行
-                if _conn:
-                    conn = _conn
-                # 更新原路径为old_path的记录
-                await conn.execute(
-                    "UPDATE copy_records SET source_path = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ?",
-                    (new_path, self.task_id, old_path),
-                )
-                # 更新目标路径为old_path的记录
-                await conn.execute(
-                    "UPDATE copy_records SET target_path = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ?",
-                    (new_path, self.task_id, old_path),
-                )
+            # 更新原路径为old_path的记录
+            await _conn.execute(
+                "UPDATE copy_records SET source_path = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ?",
+                (new_path, self.task_id, old_path),
+            )
+            # 更新目标路径为old_path的记录
+            await _conn.execute(
+                "UPDATE copy_records SET target_path = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ?",
+                (new_path, self.task_id, old_path),
+            )
         except Exception as e:
             logger.error(f"更新复制记录路径失败: {e}")
 
         logger.debug(f"修改文件复制映射，从{old_path}到{new_path}")
 
-    async def rename_dir(self, old_dir_path: str, new_dir_path: str, _conn: aiosqlite.Connection = None):
+    async def rename_dir(self, old_dir_path: str, new_dir_path: str, _conn: aiosqlite.Connection):
         """修改目录映射"""
         # 1. 处理 dir_mapping
         new_dir_mapping = {}
@@ -360,33 +331,29 @@ class CopyMapping:
 
         # 更新数据库
         try:
-            async with db_pool.get_conn() as conn:
-                # 注入conn，与审批时同一事务执行
-                if _conn:
-                    conn = _conn
-                # 情况 A：更新目录本身（is_dir = 1 且路径完全匹配）
-                # 更新 source_path 匹配的记录
-                await conn.execute(
-                    "UPDATE copy_records SET source_path = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ? AND is_dir = 1",
-                    (new_dir_path, self.task_id, old_dir_path),
-                )
-                # 更新 target_path 匹配的记录
-                await conn.execute(
-                    "UPDATE copy_records SET target_path = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ? AND is_dir = 1",
-                    (new_dir_path, self.task_id, old_dir_path),
-                )
-                # 情况 B：更新子内容（以 old_dir_path/ 为前缀的文件和子目录）
-                # 使用 SUBSTR 保留原路径的后缀部分
-                # 更新 source_path 以 old_dir_path/ 开头的记录
-                await conn.execute(
-                    "UPDATE copy_records SET source_path = ? || SUBSTR(source_path, ?), updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path LIKE ?",
-                    (new_dir_path, len(old_dir_path) + 1, self.task_id, old_dir_path + "/%"),
-                )
-                # 更新 target_path 以 old_dir_path/ 开头的记录
-                await conn.execute(
-                    "UPDATE copy_records SET target_path = ? || SUBSTR(target_path, ?), updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path LIKE ?",
-                    (new_dir_path, len(old_dir_path) + 1, self.task_id, old_dir_path + "/%"),
-                )
+            # 情况 A：更新目录本身（is_dir = 1 且路径完全匹配）
+            # 更新 source_path 匹配的记录
+            await _conn.execute(
+                "UPDATE copy_records SET source_path = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path = ? AND is_dir = 1",
+                (new_dir_path, self.task_id, old_dir_path),
+            )
+            # 更新 target_path 匹配的记录
+            await _conn.execute(
+                "UPDATE copy_records SET target_path = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path = ? AND is_dir = 1",
+                (new_dir_path, self.task_id, old_dir_path),
+            )
+            # 情况 B：更新子内容（以 old_dir_path/ 为前缀的文件和子目录）
+            # 使用 SUBSTR 保留原路径的后缀部分
+            # 更新 source_path 以 old_dir_path/ 开头的记录
+            await _conn.execute(
+                "UPDATE copy_records SET source_path = ? || SUBSTR(source_path, ?), updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path LIKE ?",
+                (new_dir_path, len(old_dir_path) + 1, self.task_id, old_dir_path + "/%"),
+            )
+            # 更新 target_path 以 old_dir_path/ 开头的记录
+            await _conn.execute(
+                "UPDATE copy_records SET target_path = ? || SUBSTR(target_path, ?), updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path LIKE ?",
+                (new_dir_path, len(old_dir_path) + 1, self.task_id, old_dir_path + "/%"),
+            )
         except Exception as e:
             logger.error(f"更新数据库目录路径失败: {e}")
 
