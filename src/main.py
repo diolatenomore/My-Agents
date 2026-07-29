@@ -27,6 +27,7 @@ from src.models.http_dtos import (
 from src.tools.loader import discover_tools
 from src.tools.approval import approval_registry
 from src.agent.react_loop import run_agent, run_agent_stream
+from src.config import STAGING_AREA_PATH
 from src.agent.model_manager import model_manager
 from src.session.cancel import CancelRegistry
 from src.memory.service import get_memory_service
@@ -445,12 +446,34 @@ async def list_sessions():
     ])
 
 
+async def _cleanup_vfs_data(task_id: str):
+    """删除会话时清理 VFS 残留：数据库记录 + 暂存区磁盘文件"""
+    try:
+        async with db_pool.get_conn() as conn:
+            await conn.execute("DELETE FROM staging_records WHERE task_id = ?", (task_id,))
+            await conn.execute("DELETE FROM copy_records WHERE task_id = ?", (task_id,))
+            await conn.execute("DELETE FROM diff_records WHERE task_id = ?", (task_id,))
+            await conn.execute("DELETE FROM review_items WHERE task_id = ?", (task_id,))
+    except Exception as e:
+        logger.error(f"清理 VFS 数据库记录失败 (task_id={task_id}): {e}")
+
+    # 清理暂存区磁盘文件
+    staging_dir = os.path.join(STAGING_AREA_PATH, task_id)
+    if os.path.exists(staging_dir):
+        try:
+            shutil.rmtree(staging_dir)
+        except Exception as e:
+            logger.error(f"清理暂存区目录失败 {staging_dir}: {e}")
+
+
 @app.delete('/api/sessions/{session_id}')
 async def delete_session(session_id: str = Path(...)):
     """删除会话"""
     await app.state.session_manager.delete(session_id)
     # 同步清除冻结的 system prompt 缓存
     app.state.system_prompt_cache.clear(session_id)
+    # 清理 VFS 残留数据（暂存区文件 + 数据库记录）
+    await _cleanup_vfs_data(session_id)
     return JSONResponse(content={"code": 200, "message": f"会话 {session_id} 已删除"})
 
 
