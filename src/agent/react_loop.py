@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncGenerator, Optional
 
 from openai import AsyncOpenAI
@@ -48,6 +48,7 @@ class AgentResult:
     messages: list  # 完整的消息列表（含中间步骤）
     iterations: int = 0  # 实际迭代次数
     tool_calls_count: int = 0  # 工具调用次数
+    token_usage: dict = field(default_factory=dict)  # 各维度 token 用量，字段: prompt_tokens(累计), completion_tokens(累计), context_tokens(最后一轮上下文)
 
 
 # ========== 消息格式转换 ==========
@@ -171,7 +172,7 @@ async def run_agent(
     client, cfg.model = await model_manager.resolve_model(model_id)
 
     try:
-        iterations, total_tool_calls = await _execute_loop(client, cfg, messages, tools)
+        iterations, total_tool_calls, token_usage = await _execute_loop(client, cfg, messages, tools)
     except Exception as e:
         raise ValueError(translate_openai_error(e)) from e
 
@@ -187,6 +188,7 @@ async def run_agent(
         messages=messages,
         iterations=iterations,
         tool_calls_count=total_tool_calls,
+        token_usage=token_usage,
     )
 
 
@@ -241,6 +243,8 @@ async def run_agent_stream(
     client, cfg.model = await model_manager.resolve_model(model_id)
 
     try:
+        token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "context_tokens": 0}
+
         for iteration in range(1, cfg.max_iterations + 1):
 
             # 检查点1：每轮迭代开始前检查取消信号
@@ -249,6 +253,7 @@ async def run_agent_stream(
                     "type": "cancelled",
                     "content": "",
                     "_messages": messages,
+                    "token_usage": token_usage,
                 }
                 return
 
@@ -260,6 +265,7 @@ async def run_agent_stream(
                 messages=openai_msgs,
                 tools=tools,
                 stream=True,
+                stream_options={"include_usage": True},
                 **_build_request_kwargs(cfg),
             )
 
@@ -268,6 +274,7 @@ async def run_agent_stream(
             # 工具调用增量聚合: index → {id, name, args_str}
             tool_call_bufs: dict[int, dict] = {}
             chunk_count = 0  # 用于取消检查的 chunk 计数
+            stream_usage = None  # 流式最后一个 chunk 的 usage
 
             async for chunk in stream:
                 chunk_count += 1
@@ -283,10 +290,13 @@ async def run_agent_stream(
                         "type": "cancelled",
                         "content": full_content,
                         "_messages": messages,
+                        "token_usage": token_usage,
                     }
                     return
 
                 delta = chunk.choices[0].delta if chunk.choices else None
+                if chunk.usage:
+                    stream_usage = chunk.usage
                 if not delta:
                     continue
 
@@ -317,7 +327,13 @@ async def run_agent_stream(
                         if tc_delta.function and tc_delta.function.arguments:
                             buf["args_str"] += tc_delta.function.arguments
 
-            # 流结束后构造 tool_calls（内部格式）
+            # 累计流式调用的 token 用量
+            if stream_usage:
+                token_usage["prompt_tokens"] += stream_usage.prompt_tokens
+                token_usage["completion_tokens"] += stream_usage.completion_tokens
+                token_usage["context_tokens"] = stream_usage.total_tokens
+
+            # 流结束后构造 tool_calls（内部格式） 
             tool_calls = []
             for idx in sorted(tool_call_bufs.keys()):
                 buf = tool_call_bufs[idx]
@@ -341,7 +357,12 @@ async def run_agent_stream(
 
             # 没有工具调用 → 模型完成
             if not tool_calls:
-                yield {"type": "done", "content": full_content, "_messages": messages}
+                yield {
+                    "type": "done",
+                    "content": full_content,
+                    "_messages": messages,
+                    "token_usage": token_usage,
+                }
                 return
 
             # 执行工具调用（并行，边完成边 yield）
@@ -372,7 +393,12 @@ async def run_agent_stream(
         choice = response.choices[0].message
         final_content = choice.content or ""
         messages.append({"role": "assistant", "content": final_content})
-        yield {"type": "done", "content": final_content, "_messages": messages}
+        yield {
+            "type": "done",
+            "content": final_content,
+            "_messages": messages,
+            "token_usage": token_usage,
+        }
 
     except Exception as e:
         logger.error(f"[Agent] 流式执行出错: {e}", exc_info=True)
@@ -381,10 +407,16 @@ async def run_agent_stream(
 
 async def _execute_loop(
     client: AsyncOpenAI, cfg: AgentConfig, messages: list[dict], tools: list,
-) -> tuple[int, int]:
-    """非流式版本的 ReAct 循环执行体"""
+) -> tuple[int, int, dict]:
+    """非流式版本的 ReAct 循环执行体
+
+    Returns:
+        (iterations, total_tool_calls, token_usage)
+        token_usage 字段: prompt_tokens(累计), completion_tokens(累计), context_tokens(最后一轮上下文)
+    """
     iterations = 0
     total_tool_calls = 0
+    token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "context_tokens": 0}
 
     while iterations < cfg.max_iterations:
         iterations += 1
@@ -399,6 +431,10 @@ async def _execute_loop(
             **_build_request_kwargs(cfg),
         )
         choice = response.choices[0].message
+        if response.usage:
+            token_usage["prompt_tokens"] += response.usage.prompt_tokens
+            token_usage["completion_tokens"] += response.usage.completion_tokens
+            token_usage["context_tokens"] = response.usage.prompt_tokens
 
         msg = {
             "role": "assistant",
@@ -410,7 +446,7 @@ async def _execute_loop(
         if not msg["tool_calls"]:
             if cfg.verbose:
                 logger.info(f"[Agent] 模型完成输出，共 {iterations} 次迭代，{total_tool_calls} 次工具调用")
-            return iterations, total_tool_calls
+            return iterations, total_tool_calls, token_usage
 
         for tc in msg["tool_calls"]:
             total_tool_calls += 1
@@ -442,9 +478,13 @@ async def _execute_loop(
         **_build_request_kwargs(cfg),
     )
     choice = response.choices[0].message
+    if response.usage:
+        token_usage["prompt_tokens"] += response.usage.prompt_tokens
+        token_usage["completion_tokens"] += response.usage.completion_tokens
+        token_usage["context_tokens"] = response.usage.prompt_tokens
     messages.append({"role": "assistant", "content": choice.content or ""})
 
-    return iterations, total_tool_calls
+    return iterations, total_tool_calls, token_usage
 
 
 async def _execute_tool_calls_parallel(

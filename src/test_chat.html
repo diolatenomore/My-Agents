@@ -627,6 +627,16 @@ async function send() {
 
           case 'done':
             label.textContent = '完成';
+            if (parsed.token_usage) {
+              const tu = parsed.token_usage;
+              const totalTokens = (tu.prompt_tokens || 0) + (tu.completion_tokens || 0);
+              let tokenInfo = ` (总计 ${tu.prompt_tokens || 0} 入 + ${tu.completion_tokens || 0} 出 = ${totalTokens} tokens`;
+              if (tu.context_tokens != null) {
+                tokenInfo += `，上下文 ${tu.context_tokens} tokens`;
+              }
+              tokenInfo += ')';
+              label.textContent += tokenInfo;
+            }
             if (parsed.content) {
               fullContent = parsed.content;
               contentDiv.textContent = fullContent;
@@ -640,7 +650,17 @@ async function send() {
             break;
 
           case 'cancelled':
-            label.textContent = '⏹ 已中断';
+            label.textContent = '已中断';
+            if (parsed.token_usage) {
+              const tu = parsed.token_usage;
+              const totalTokens = (tu.prompt_tokens || 0) + (tu.completion_tokens || 0);
+              let tokenInfo = ` (总计 ${tu.prompt_tokens || 0} 入 + ${tu.completion_tokens || 0} 出 = ${totalTokens} tokens`;
+              if (tu.context_tokens != null) {
+                tokenInfo += `，上下文 ${tu.context_tokens} tokens`;
+              }
+              tokenInfo += ')';
+              label.textContent += tokenInfo;
+            }
             if (parsed.content) {
               fullContent = parsed.content;
               contentDiv.textContent = fullContent;
