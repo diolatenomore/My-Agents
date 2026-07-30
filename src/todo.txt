@@ -1,0 +1,8 @@
+TODO 执行复杂任务前先规划（plan-and-execute）  system prompt加上think step by step
+TODO 记忆检索加时间权重  具体实现上通常用一个指数衰减公式：记忆的相关性分数 = 语义相似度 x 时间衰减因子，时间衰减因子随着时间推移逐渐降低。衰减速度可以根据业务场景调整
+TODO 上下文压缩机制
+TODO 上下文管理
+TODO multiagent机制（避免递归委派）
+TODO 配置模型时添加token上限配置等等高级配置（Claude code做法——上限减13K）
+TODO 完整前端
+TODO readme.md添加跳转？
