@@ -5,6 +5,8 @@ from pathlib import Path
 
 from datetime import datetime
 
+import aiosqlite
+
 from src.db.sqlite_pool import db_pool
 from src.utils.common import logger
 
