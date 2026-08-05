@@ -337,7 +337,7 @@ class DiffTable:
         # 2. 前缀匹配：检查是否是某个已映射目录的子路径
         for old_path, new_path in mapping.items():
             # 确保是目录前缀（以 / 结尾或后面跟着 /）
-            if path == old_path or path.startswith(old_path + "/"):
+            if path == old_path or path.startswith(old_path + os.sep):
                 return new_path + path[len(old_path):]
         
         # 3. 未匹配到任何路径，返回原始路径
@@ -367,7 +367,7 @@ class DiffTable:
         if not parent.sub_groups:
             return None
 
-        prefix = new_path + "/"
+        prefix = new_path + os.sep
 
         for name, child in parent.sub_groups.items():
             if child.path.startswith(prefix):

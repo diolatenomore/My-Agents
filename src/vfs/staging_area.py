@@ -52,7 +52,7 @@ class StagingArea:
         # 将path转换为哈希值并保留扩展名，作为暂存区路径的文件名，避免因为path中包含"/"而导致创建目录
         path_hash = hashlib.md5(path.encode()).hexdigest()
         _, ext = os.path.splitext(path)
-        staging_path = f"{STAGING_AREA_PATH}/{self.task_id}/{path_hash}{ext}"
+        staging_path = os.path.join(STAGING_AREA_PATH, self.task_id, f"{path_hash}{ext}")
 
         # 更新缓存
         self.mapping[path] = staging_path
@@ -162,12 +162,12 @@ class StagingArea:
 
         # 遍历mapping，将该目录下所有文件标记为已删除
         for file_path in list(self.mapping.keys()):
-            if file_path.startswith(path + "/"):
+            if file_path.startswith(path + os.sep):
                 self.deleted_mapping[file_path] = True
 
         # 遍历deleted_dir_mapping，更新子目录的删除状态
         for dir_path in list(self.deleted_dir_mapping.keys()):
-            if dir_path.startswith(path + "/"):
+            if dir_path.startswith(path + os.sep):
                 self.mapping.pop(dir_path, None)  # 不存在也不报错
                 self.deleted_dir_mapping[dir_path] = True
 
@@ -268,7 +268,7 @@ class StagingArea:
         # 2、更新子目录缓存
         # 遍历所有已注册的路径，更新子文件/子目录的路径
         for old_path in list(self.mapping.keys()):
-            if old_path.startswith(old_dir_path + "/"):
+            if old_path.startswith(old_dir_path + os.sep):
                 # 替换前缀
                 new_sub_path = new_dir_path + old_path[len(old_dir_path):]
                 self.mapping[new_sub_path] = self.mapping[old_path]
@@ -311,7 +311,7 @@ class StagingArea:
             # 处理子目录和文件
             cursor = await _conn.execute(
                 "SELECT id, path, staging_path, is_dir FROM staging_records WHERE task_id = ? AND path LIKE ? AND is_dir = 1",
-                (self.task_id, old_dir_path + "/%"),
+                (self.task_id, old_dir_path + os.sep + "%"),
             )
             for row in await cursor.fetchall():
                 old_sub_path = row["path"]

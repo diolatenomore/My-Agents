@@ -55,10 +55,10 @@ async def list_dir(source_path: str):
     # 遍历暂存区中的所有路径
     for path in staging_area.mapping:
         # 检查是否是当前目录的直接子项
-        if path.startswith(source_path + "/"):
+        if path.startswith(source_path + os.sep):
             # 提取子项名称
             relative_path = path[len(source_path) + 1:]
-            if "/" not in relative_path:
+            if os.sep not in relative_path:
                 if isfile(path):
                     staged_files.add(relative_path)
                 elif isdir(path):
@@ -66,16 +66,16 @@ async def list_dir(source_path: str):
 
     # 检查已删除的文件（不在映射中但被标记为删除的文件）
     for path in staging_area.deleted_mapping:
-        if staging_area.deleted_mapping[path] and path.startswith(source_path + "/"):
+        if staging_area.deleted_mapping[path] and path.startswith(source_path + os.sep):
             relative_path = path[len(source_path) + 1:]
-            if "/" not in relative_path:
+            if os.sep not in relative_path:
                 deleted_files.add(relative_path)
 
     # 检查已删除的目录（不在映射中但被标记为删除的目录）
     for path in staging_area.deleted_dir_mapping:
-        if staging_area.deleted_dir_mapping[path] and path.startswith(source_path + "/"):
+        if staging_area.deleted_dir_mapping[path] and path.startswith(source_path + os.sep):
             relative_path = path[len(source_path) + 1:]
-            if "/" not in relative_path:
+            if os.sep not in relative_path:
                 deleted_dirs.add(relative_path)
 
     # 合并结果，排除已删除的项
@@ -104,9 +104,9 @@ async def read_file(path: str):
         if not os.path.exists(path):
             return f"ERROR：文件{path}不存在"
     if staging_path:
-        return open(staging_path, "r").read()
+        return open(staging_path, "r", encoding="utf-8").read()
     else:
-        return open(path, "r").read()
+        return open(path, "r", encoding="utf-8").read()
 
 
 async def create_file(path: str, content: str):
@@ -130,7 +130,7 @@ async def create_file(path: str, content: str):
             staging_path = await staging_area.register(path, _conn=conn)
 
             os.makedirs(os.path.dirname(staging_path), exist_ok=True)
-            with open(staging_path, "w") as f:
+            with open(staging_path, "w", encoding="utf-8") as f:
                 f.write(content)
 
             record = DiffRecord(task_id=task_id, operation_type=OperationType.CREATE_FILE, source_path=path)
@@ -175,10 +175,10 @@ async def rename_file(source_path: str, target_path: str):
             # 不允许跨目录重命名
             source_parent = str(Path(source_path).parent)
             target_parent = str(Path(target_path).parent)
-            # 统一处理"."和"/"的情况
-            if source_parent == "." or source_parent == "/":
+            # 统一处理"."和根路径的情况
+            if source_parent == "." or source_parent == os.sep or source_parent in ("/", "\\"):
                 source_parent = ""
-            if target_parent == "." or target_parent == "/":
+            if target_parent == "." or target_parent == os.sep or target_parent in ("/", "\\"):
                 target_parent = ""
 
             if source_parent != target_parent:
@@ -260,7 +260,7 @@ async def modify_file(path: str, new_str: str, replace: bool, old_str: str = Non
                 if old_str is None:
                     return f"ERROR：SEARCH/REPLACE 模式下必须提供 old_str"
                 # SEARCH/REPLACE 模式：在文件中查找 old_str 并替换为 new_str
-                with open(staging_path, "r") as f:
+                with open(staging_path, "r", encoding="utf-8") as f:
                     file_content = f.read()
 
                 count = file_content.count(old_str)
@@ -270,12 +270,12 @@ async def modify_file(path: str, new_str: str, replace: bool, old_str: str = Non
                     return f"ERROR：old_str 在文件{path}中出现了 {count} 次（不唯一），请提供更多上下文以保证唯一匹配"
 
                 new_content = file_content.replace(old_str, new_str)
-                with open(staging_path, "w") as f:
+                with open(staging_path, "w", encoding="utf-8") as f:
                     f.write(new_content)
             else:
                 # 全量覆盖模式
                 os.makedirs(os.path.dirname(staging_path), exist_ok=True)
-                with open(staging_path, "w") as f:
+                with open(staging_path, "w", encoding="utf-8") as f:
                     f.write(new_str)
 
             record = DiffRecord(task_id=task_id, operation_type=OperationType.MODIFY_FILE, source_path=path)
@@ -420,10 +420,10 @@ async def rename_dir(source_path: str, target_path: str):
             # 不允许跨目录重命名
             source_parent = str(Path(source_path).parent)
             target_parent = str(Path(target_path).parent)
-            # 统一处理"."和"/"的情况
-            if source_parent == "." or source_parent == "/":
+            # 统一处理"."和根路径的情况
+            if source_parent == "." or source_parent == os.sep or source_parent in ("/", "\\"):
                 source_parent = ""
-            if target_parent == "." or target_parent == "/":
+            if target_parent == "." or target_parent == os.sep or target_parent in ("/", "\\"):
                 target_parent = ""
 
             if source_parent != target_parent:

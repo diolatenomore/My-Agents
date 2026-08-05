@@ -77,7 +77,7 @@ class CopyMapping:
 
         # 加上对应的目录拷贝次数
         for dir_path in self.dir_mapping.keys():
-            if source_path.startswith(dir_path + "/"):
+            if source_path.startswith(dir_path + os.sep):
                 registered_num += 1
 
         # 已被拷贝数与总数不一致则返回true
@@ -119,7 +119,7 @@ class CopyMapping:
 
         # 处理目录拷贝情况（copy_dir操作的原路径作为source_path的前缀）
         for dir_path in self.dir_mapping.keys():
-            if source_path.startswith(dir_path + "/") and source_path not in self.dir_copy_done.get(dir_path, []):
+            if source_path.startswith(dir_path + os.sep) and source_path not in self.dir_copy_done.get(dir_path, []):
                 # 计算目标路径
                 target_path = self.dir_mapping[dir_path] + source_path[len(dir_path):]
                 target_staging_path = self._staging_area.get_staging_path(target_path)
@@ -163,7 +163,7 @@ class CopyMapping:
         dir_paths_to_update = [source_path]
         # 从缓存中查找所有子目录的复制记录
         for dir_source_path in self.dir_mapping.keys():
-            if dir_source_path.startswith(source_path + '/'):
+            if dir_source_path.startswith(source_path + os.sep):
                 dir_paths_to_update.append(dir_source_path)
 
         try:
@@ -218,7 +218,7 @@ class CopyMapping:
         # 判断是否为目录拷贝（target_path作为copy_dir操作的目标路径）
         else:
             for dir_source_path, dir_target_path in self.dir_mapping.items():
-                if target_path.startswith(dir_target_path + "/"):
+                if target_path.startswith(dir_target_path + os.sep):
                     # 计算源路径
                     source_path = dir_source_path + target_path[len(dir_target_path):]
                     # 已拷贝，结束
@@ -292,10 +292,10 @@ class CopyMapping:
             new_key = target_path
             new_value = source_path
             # key（target_path）以 old_dir_path 为前缀
-            if target_path.startswith(old_dir_path + "/"):
+            if target_path.startswith(old_dir_path + os.sep):
                 new_key = new_dir_path + target_path[len(old_dir_path):]
             # value（source_path）以 old_dir_path 为前缀
-            if source_path.startswith(old_dir_path + "/"):
+            if source_path.startswith(old_dir_path + os.sep):
                 new_value = new_dir_path + source_path[len(old_dir_path):]
             if new_key != target_path or new_value != source_path:
                 self.file_reverse.pop(target_path)
@@ -318,7 +318,7 @@ class CopyMapping:
         def replace_prefix(mapping):
             new_mapping = {}
             for path, value in mapping.items():
-                if path.startswith(old_dir_path + '/'):
+                if path.startswith(old_dir_path + os.sep):
                     # 替换前缀
                     new_path = new_dir_path + path[len(old_dir_path):]
                     new_mapping[new_path] = value
@@ -347,12 +347,12 @@ class CopyMapping:
             # 更新 source_path 以 old_dir_path/ 开头的记录
             await _conn.execute(
                 "UPDATE copy_records SET source_path = ? || SUBSTR(source_path, ?), updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND source_path LIKE ?",
-                (new_dir_path, len(old_dir_path) + 1, self.task_id, old_dir_path + "/%"),
+                (new_dir_path, len(old_dir_path) + 1, self.task_id, old_dir_path + os.sep + "%"),
             )
             # 更新 target_path 以 old_dir_path/ 开头的记录
             await _conn.execute(
                 "UPDATE copy_records SET target_path = ? || SUBSTR(target_path, ?), updated_at = CURRENT_TIMESTAMP WHERE task_id = ? AND target_path LIKE ?",
-                (new_dir_path, len(old_dir_path) + 1, self.task_id, old_dir_path + "/%"),
+                (new_dir_path, len(old_dir_path) + 1, self.task_id, old_dir_path + os.sep + "%"),
             )
         except Exception as e:
             logger.error(f"更新数据库目录路径失败: {e}")
@@ -445,7 +445,7 @@ class CopyMapping:
             return self.file_reverse[path]
         # 2. 目录前缀匹配（被 copy_dir/move_dir 覆盖的子文件）
         for target_dir, source_dir in self.dir_reverse.items():
-            if path.startswith(target_dir + "/"):
+            if path.startswith(target_dir + os.sep):
                 return source_dir + path[len(target_dir):]
         return None
 
