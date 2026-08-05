@@ -89,7 +89,7 @@ async def _maybe_generate_title(session_id: str, messages: list, session_manager
 @app.get('/')
 async def index():
     """提供测试页面"""
-    html_path = './test_chat.html'
+    html_path = os.path.join(os.path.dirname(__file__), 'test_chat.html')
     with open(html_path, 'r', encoding='utf-8') as f:
         return HTMLResponse(f.read())
 
