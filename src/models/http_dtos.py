@@ -76,6 +76,9 @@ class CreateModelRequest(BaseModel):
     base_url: str
     model: str
     api_key: str
+    max_context_tokens: Optional[int] = Field(default=200000, description="上下文窗口 token 上限")
+    max_output_tokens: Optional[int] = Field(default=64000, description="单次输出最大 token 数")
+    max_tool_calls: Optional[int] = Field(default=200, description="单轮最大工具调用次数")
 
 
 class UpdateModelRequest(BaseModel):
@@ -83,6 +86,9 @@ class UpdateModelRequest(BaseModel):
     base_url: Optional[str] = None
     model: Optional[str] = None
     api_key: Optional[str] = None
+    max_context_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
+    max_tool_calls: Optional[int] = None
 
 
 class ModelConfigDTO(BaseModel):
@@ -92,5 +98,8 @@ class ModelConfigDTO(BaseModel):
     model: str
     env_var_name: str
     is_active: int = 1
+    max_context_tokens: int = 200000
+    max_output_tokens: int = 64000
+    max_tool_calls: int = 200
     created_at: str = ""
     updated_at: str = ""

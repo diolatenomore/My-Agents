@@ -50,7 +50,9 @@ class ModelManager:
         """列出所有模型配置（不含 api_key）"""
         async with db_pool.get_conn() as conn:
             cursor = await conn.execute(
-                "SELECT id, name, base_url, model, env_var_name, is_active, created_at, updated_at "
+                "SELECT id, name, base_url, model, env_var_name, is_active, "
+                "max_context_tokens, max_output_tokens, max_tool_calls, "
+                "created_at, updated_at "
                 "FROM model_configs ORDER BY created_at DESC"
             )
             rows = await cursor.fetchall()
@@ -60,13 +62,17 @@ class ModelManager:
         """获取单个模型详情（不含 api_key）"""
         async with db_pool.get_conn() as conn:
             cursor = await conn.execute(
-                "SELECT id, name, base_url, model, env_var_name, is_active, created_at, updated_at "
+                "SELECT id, name, base_url, model, env_var_name, is_active, "
+                "max_context_tokens, max_output_tokens, max_tool_calls, "
+                "created_at, updated_at "
                 "FROM model_configs WHERE id = ?", (model_id,)
             )
             row = await cursor.fetchone()
         return dict(row) if row else None
 
-    async def create_model(self, name: str, base_url: str, model: str, api_key: str) -> dict:
+    async def create_model(self, name: str, base_url: str, model: str, api_key: str,
+                           max_context_tokens: int = 200000, max_output_tokens: int = 64000,
+                           max_tool_calls: int = 200) -> dict:
         """创建新模型配置"""
         model_id = str(uuid.uuid4())
         env_var_name = f"{ENV_KEY_PREFIX}{_sanitize_name(name)}"
@@ -76,8 +82,11 @@ class ModelManager:
 
         async with db_pool.get_conn() as conn:
             await conn.execute(
-                "INSERT INTO model_configs (id, name, base_url, model, env_var_name) VALUES (?, ?, ?, ?, ?)",
-                (model_id, name, base_url, model, env_var_name),
+                "INSERT INTO model_configs (id, name, base_url, model, env_var_name, "
+                "max_context_tokens, max_output_tokens, max_tool_calls) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (model_id, name, base_url, model, env_var_name,
+                 max_context_tokens, max_output_tokens, max_tool_calls),
             )
 
         logger.info(f"模型配置已创建: {name} (id={model_id})")
@@ -85,7 +94,10 @@ class ModelManager:
 
     async def update_model(self, model_id: str, name: Optional[str] = None,
                            base_url: Optional[str] = None, model: Optional[str] = None,
-                           api_key: Optional[str] = None) -> Optional[dict]:
+                           api_key: Optional[str] = None,
+                           max_context_tokens: Optional[int] = None,
+                           max_output_tokens: Optional[int] = None,
+                           max_tool_calls: Optional[int] = None) -> Optional[dict]:
         """更新模型配置"""
         existing = await self.get_model(model_id)
         if not existing:
@@ -107,11 +119,26 @@ class ModelManager:
             if current_key:
                 self._write_env_var(new_env_var_name, current_key)
 
+        # 构建动态 UPDATE 语句
+        set_clauses = ["name=?", "base_url=?", "model=?", "env_var_name=?", "updated_at=datetime('now')"]
+        params = [new_name, new_base_url, new_model, new_env_var_name]
+
+        if max_context_tokens is not None:
+            set_clauses.append("max_context_tokens=?")
+            params.append(max_context_tokens)
+        if max_output_tokens is not None:
+            set_clauses.append("max_output_tokens=?")
+            params.append(max_output_tokens)
+        if max_tool_calls is not None:
+            set_clauses.append("max_tool_calls=?")
+            params.append(max_tool_calls)
+
+        params.append(model_id)
+
         async with db_pool.get_conn() as conn:
             await conn.execute(
-                "UPDATE model_configs SET name=?, base_url=?, model=?, env_var_name=?, updated_at=datetime('now') "
-                "WHERE id=?",
-                (new_name, new_base_url, new_model, new_env_var_name, model_id),
+                f"UPDATE model_configs SET {', '.join(set_clauses)} WHERE id=?",
+                params,
             )
 
         logger.info(f"模型配置已更新: {new_name} (id={model_id})")

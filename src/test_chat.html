@@ -179,6 +179,11 @@
   .model-form .form-actions button { padding: 6px 20px; font-size: 13px; border-radius: 6px; }
   .model-form .form-actions .cancel-btn { background: #f5f5f5; color: #666; border: 1px solid #ddd; }
   .model-form .form-actions .cancel-btn:hover { background: #e0e0e0; }
+  .adv-toggle { font-size: 13px; color: #1976d2; cursor: pointer; padding: 6px 0; margin-bottom: 8px; user-select: none; }
+  .adv-toggle:hover { color: #1565c0; }
+  .adv-toggle span { display: inline-block; transition: transform 0.2s; font-size: 11px; margin-right: 4px; }
+  .adv-toggle.open span { transform: rotate(90deg); }
+  .adv-config { padding-left: 82px; }
   .model-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
   .model-badge.active { background: #e8f5e9; color: #2e7d32; }
 
@@ -309,6 +314,24 @@
         <label>API Key</label>
         <input id="modelFormKey" type="password" placeholder="输入 API Key">
         <button onclick="toggleApiKeyVisibility()" style="padding:6px 10px;font-size:11px;background:none;color:#666;border:1px solid #ddd;border-radius:4px;cursor:pointer;">显示</button>
+      </div>
+      <!-- 高级配置（可折叠） -->
+      <div class="adv-toggle" onclick="toggleAdvancedConfig()">
+        <span id="advArrow">&#9654;</span> 高级配置
+      </div>
+      <div class="adv-config" id="advConfig" style="display:none;">
+        <div class="form-row">
+          <label>上下文 Token 上限</label>
+          <input id="modelFormCtxTokens" type="number" value="200000" placeholder="200000">
+        </div>
+        <div class="form-row">
+          <label>最大输出 Token</label>
+          <input id="modelFormMaxTokens" type="number" value="64000" placeholder="64000">
+        </div>
+        <div class="form-row">
+          <label>最大工具调用轮数</label>
+          <input id="modelFormMaxToolCalls" type="number" value="200" placeholder="200">
+        </div>
       </div>
       <div class="form-actions">
         <button class="cancel-btn" onclick="hideModelForm()">取消</button>
@@ -1282,18 +1305,28 @@ async function showModelsPage() {
 function showModelForm(model) {
   const form = document.getElementById('modelForm');
   form.classList.add('show');
+  // 重置高级配置折叠状态
+  document.getElementById('advConfig').style.display = 'none';
+  document.getElementById('advArrow').innerHTML = '&#9654;';
+  document.querySelector('.adv-toggle').classList.remove('open');
   if (model) {
     document.getElementById('editModelId').value = model.id;
     document.getElementById('modelFormName').value = model.name;
     document.getElementById('modelFormUrl').value = model.base_url;
     document.getElementById('modelFormModel').value = model.model;
     document.getElementById('modelFormKey').value = '';
+    document.getElementById('modelFormCtxTokens').value = model.max_context_tokens ?? 200000;
+    document.getElementById('modelFormMaxTokens').value = model.max_output_tokens ?? 64000;
+    document.getElementById('modelFormMaxToolCalls').value = model.max_tool_calls ?? 200;
   } else {
     document.getElementById('editModelId').value = '';
     document.getElementById('modelFormName').value = '';
     document.getElementById('modelFormUrl').value = '';
     document.getElementById('modelFormModel').value = '';
     document.getElementById('modelFormKey').value = '';
+    document.getElementById('modelFormCtxTokens').value = 200000;
+    document.getElementById('modelFormMaxTokens').value = 64000;
+    document.getElementById('modelFormMaxToolCalls').value = 200;
   }
 }
 
@@ -1308,6 +1341,9 @@ async function saveModel() {
   const base_url = document.getElementById('modelFormUrl').value.trim();
   const model = document.getElementById('modelFormModel').value.trim();
   const api_key = document.getElementById('modelFormKey').value.trim();
+  const max_context_tokens = parseInt(document.getElementById('modelFormCtxTokens').value) || 200000;
+  const max_output_tokens = parseInt(document.getElementById('modelFormMaxTokens').value) || 64000;
+  const max_tool_calls = parseInt(document.getElementById('modelFormMaxToolCalls').value) || 200;
 
   if (!name || !base_url || !model || !api_key) {
     alert('所有字段都不能为空');
@@ -1320,13 +1356,13 @@ async function saveModel() {
       res = await fetch(`/api/models/${editId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, base_url, model, api_key }),
+        body: JSON.stringify({ name, base_url, model, api_key, max_context_tokens, max_output_tokens, max_tool_calls }),
       });
     } else {
       res = await fetch('/api/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, base_url, model, api_key }),
+        body: JSON.stringify({ name, base_url, model, api_key, max_context_tokens, max_output_tokens, max_tool_calls }),
       });
     }
     const result = await res.json();
@@ -1339,6 +1375,21 @@ async function saveModel() {
     }
   } catch (err) {
     alert('网络错误: ' + err.message);
+  }
+}
+
+function toggleAdvancedConfig() {
+  const el = document.getElementById('advConfig');
+  const arrow = document.getElementById('advArrow');
+  const toggle = document.querySelector('.adv-toggle');
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    arrow.innerHTML = '&#9660;';
+    toggle.classList.add('open');
+  } else {
+    el.style.display = 'none';
+    arrow.innerHTML = '&#9654;';
+    toggle.classList.remove('open');
   }
 }
 

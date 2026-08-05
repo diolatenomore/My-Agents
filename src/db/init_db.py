@@ -122,6 +122,9 @@ async def init_db():
                 model TEXT NOT NULL,
                 env_var_name TEXT NOT NULL UNIQUE,
                 is_active INTEGER NOT NULL DEFAULT 1,
+                max_context_tokens INTEGER NOT NULL DEFAULT 200000,
+                max_output_tokens INTEGER NOT NULL DEFAULT 64000,
+                max_tool_calls INTEGER NOT NULL DEFAULT 200,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             )

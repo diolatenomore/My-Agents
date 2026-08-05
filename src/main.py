@@ -681,6 +681,9 @@ async def create_model(req: CreateModelRequest):
             base_url=req.base_url.strip(),
             model=req.model.strip(),
             api_key=req.api_key.strip(),
+            max_context_tokens=req.max_context_tokens,
+            max_output_tokens=req.max_output_tokens,
+            max_tool_calls=req.max_tool_calls,
         )
         return JSONResponse(content={"code": 200, "message": "创建成功", "data": ModelConfigDTO(**result).model_dump()})
     except Exception as e:
@@ -701,6 +704,9 @@ async def update_model(model_id: str, req: UpdateModelRequest):
             base_url=req.base_url.strip() if req.base_url else None,
             model=req.model.strip() if req.model else None,
             api_key=req.api_key.strip() if req.api_key else None,
+            max_context_tokens=req.max_context_tokens,
+            max_output_tokens=req.max_output_tokens,
+            max_tool_calls=req.max_tool_calls,
         )
         if not result:
             return JSONResponse(content={"code": 404, "message": "模型配置不存在"}, status_code=404)
