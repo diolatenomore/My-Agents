@@ -6,6 +6,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -22,8 +23,9 @@ if not os.path.isdir(_PROJECT_ROOT):
 class ExecuteInput(BaseModel):
     command: str = Field(
         description=(
-            "要执行的 shell 命令。示例: 'pip install -r requirements.txt'、"
-            "'python scripts/feixing.py --help'、'bash scripts/activation.sh'"
+            "要执行的 shell 命令。请使用当前平台适用的命令格式。"
+            "Windows 下为 cmd.exe 命令（如 dir、type、date /T），"
+            "如需 PowerShell 命令请使用 powershell -Command \"...\"。"
         )
     )
     cwd: str = Field(
@@ -54,6 +56,9 @@ def execute(command: str, cwd: str = ".", timeout: int = 60) -> str:
     用于运行 skill 附带的脚本（Python、Shell、Node.js 等），
     安装依赖（pip install），或调用外部 CLI 工具（curl、jq 等）。
 
+    注意：不同平台命令格式不同，请使用当前平台适用的命令。
+    当前平台：{os_name}（Shell: {shell_name}）。
+
     Args:
         command: shell 命令
         cwd: 工作目录
@@ -61,7 +66,10 @@ def execute(command: str, cwd: str = ".", timeout: int = 60) -> str:
 
     Returns:
         命令的 stdout + stderr 输出（超长截断到 5000 字符）
-    """
+    """.format(
+        os_name="Windows" if sys.platform == "win32" else "macOS/Linux",
+        shell_name="cmd.exe" if sys.platform == "win32" else "bash/sh",
+    )
     # cwd 的相对路径始终相对于项目根目录解析，不依赖进程的当前工作目录。
     cwd = _resolve_cwd(cwd)
     try:
@@ -101,10 +109,12 @@ def execute(command: str, cwd: str = ".", timeout: int = 60) -> str:
 
 # ============ 注册工具 ============
 
+_current_os = "Windows" if sys.platform == "win32" else "macOS/Linux"
 registry.register(
     name="execute",
     description=(
-        "在终端中执行 shell 命令。用于运行 skill 附带的脚本（scripts/ 目录）、"
+        f"在终端中执行 shell 命令（当前平台：{_current_os}）。"
+        "用于运行 skill 附带的脚本（scripts/ 目录）、"
         "安装依赖（pip install）、调用外部 CLI（curl、jq、python 等）。"
         "执行 skill 脚本时，请将 cwd 设为 skills/<skill-name>。"
     ),
