@@ -7,3 +7,5 @@ venv/
 **/.DS_Store
 .idea/
 /skills/
+/workspace/
+.env
