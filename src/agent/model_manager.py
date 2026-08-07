@@ -52,6 +52,7 @@ class ModelManager:
             cursor = await conn.execute(
                 "SELECT id, name, base_url, model, env_var_name, is_active, "
                 "max_context_tokens, max_output_tokens, max_tool_calls, "
+                "temperature, max_iterations, think, reasoning_effort, "
                 "created_at, updated_at "
                 "FROM model_configs ORDER BY created_at DESC"
             )
@@ -64,6 +65,7 @@ class ModelManager:
             cursor = await conn.execute(
                 "SELECT id, name, base_url, model, env_var_name, is_active, "
                 "max_context_tokens, max_output_tokens, max_tool_calls, "
+                "temperature, max_iterations, think, reasoning_effort, "
                 "created_at, updated_at "
                 "FROM model_configs WHERE id = ?", (model_id,)
             )
@@ -72,7 +74,9 @@ class ModelManager:
 
     async def create_model(self, name: str, base_url: str, model: str, api_key: str,
                            max_context_tokens: int = 200000, max_output_tokens: int = 64000,
-                           max_tool_calls: int = 50) -> dict:
+                           max_tool_calls: int = 50,
+                           temperature: float = 0.7, max_iterations: int = 30,
+                           think: bool = True, reasoning_effort: Optional[str] = None) -> dict:
         """创建新模型配置"""
         model_id = str(uuid.uuid4())
         env_var_name = f"{ENV_KEY_PREFIX}{_sanitize_name(name)}"
@@ -83,10 +87,12 @@ class ModelManager:
         async with db_pool.get_conn() as conn:
             await conn.execute(
                 "INSERT INTO model_configs (id, name, base_url, model, env_var_name, "
-                "max_context_tokens, max_output_tokens, max_tool_calls) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "max_context_tokens, max_output_tokens, max_tool_calls, "
+                "temperature, max_iterations, think, reasoning_effort) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (model_id, name, base_url, model, env_var_name,
-                 max_context_tokens, max_output_tokens, max_tool_calls),
+                 max_context_tokens, max_output_tokens, max_tool_calls,
+                 temperature, max_iterations, int(think), reasoning_effort),
             )
 
         logger.info(f"模型配置已创建: {name} (id={model_id})")
@@ -97,7 +103,11 @@ class ModelManager:
                            api_key: Optional[str] = None,
                            max_context_tokens: Optional[int] = None,
                            max_output_tokens: Optional[int] = None,
-                           max_tool_calls: Optional[int] = None) -> Optional[dict]:
+                           max_tool_calls: Optional[int] = None,
+                           temperature: Optional[float] = None,
+                           max_iterations: Optional[int] = None,
+                           think: Optional[bool] = None,
+                           reasoning_effort: Optional[str] = None) -> Optional[dict]:
         """更新模型配置"""
         existing = await self.get_model(model_id)
         if not existing:
@@ -132,6 +142,18 @@ class ModelManager:
         if max_tool_calls is not None:
             set_clauses.append("max_tool_calls=?")
             params.append(max_tool_calls)
+        if temperature is not None:
+            set_clauses.append("temperature=?")
+            params.append(temperature)
+        if max_iterations is not None:
+            set_clauses.append("max_iterations=?")
+            params.append(max_iterations)
+        if think is not None:
+            set_clauses.append("think=?")
+            params.append(int(think))
+        if reasoning_effort is not None:
+            set_clauses.append("reasoning_effort=?")
+            params.append(reasoning_effort)
 
         params.append(model_id)
 
@@ -159,14 +181,14 @@ class ModelManager:
         logger.info(f"模型配置已删除: {existing['name']} (id={model_id})")
         return True
 
-    async def resolve_model(self, model_id: str) -> tuple[AsyncOpenAI, str]:
-        """解析模型配置并创建客户端，同时返回 model 标识符
+    async def resolve_model(self, model_id: str) -> tuple[AsyncOpenAI, dict]:
+        """解析模型配置并创建客户端
 
         Args:
             model_id: 模型配置 ID（必传）
 
         Returns:
-            (AsyncOpenAI 客户端, model 标识符)
+            (AsyncOpenAI 客户端, 完整模型配置 dict)
 
         Raises:
             ValueError: 模型不存在或 API Key 未配置
@@ -185,7 +207,7 @@ class ModelManager:
         # 连接超时 10s，read 超时 120s（兼容思考模式等长时间无输出的场景）
         timeout = httpx.Timeout(120.0, connect=10.0)
         return (AsyncOpenAI(base_url=model_config["base_url"], api_key=api_key, timeout=timeout),
-                model_config["model"])
+                model_config)
 
     def _write_env_var(self, key: str, value: str):
         """写入环境变量到 os.environ 和 .env 文件"""

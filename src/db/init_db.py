@@ -125,9 +125,25 @@ async def init_db():
                 max_context_tokens INTEGER NOT NULL DEFAULT 200000,
                 max_output_tokens INTEGER NOT NULL DEFAULT 64000,
                 max_tool_calls INTEGER NOT NULL DEFAULT 50,
+                temperature REAL NOT NULL DEFAULT 0.7,
+                max_iterations INTEGER NOT NULL DEFAULT 30,
+                think INTEGER NOT NULL DEFAULT 1,
+                reasoning_effort TEXT,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
+
+        # 迁移：Agent 运行时配置字段（v2）
+        for col_sql in [
+            "ALTER TABLE model_configs ADD COLUMN temperature REAL NOT NULL DEFAULT 0.7",
+            "ALTER TABLE model_configs ADD COLUMN max_iterations INTEGER NOT NULL DEFAULT 30",
+            "ALTER TABLE model_configs ADD COLUMN think INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE model_configs ADD COLUMN reasoning_effort TEXT",
+        ]:
+            try:
+                await conn.execute(col_sql)
+            except Exception:
+                pass  # 列已存在
 
     logger.info("数据库所有表初始化完成")

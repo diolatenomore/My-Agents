@@ -699,6 +699,10 @@ async def create_model(req: CreateModelRequest):
             max_context_tokens=req.max_context_tokens,
             max_output_tokens=req.max_output_tokens,
             max_tool_calls=req.max_tool_calls,
+            temperature=req.temperature,
+            max_iterations=req.max_iterations,
+            think=req.think,
+            reasoning_effort=req.reasoning_effort,
         )
         return JSONResponse(content={"code": 200, "message": "创建成功", "data": ModelConfigDTO(**result).model_dump()})
     except Exception as e:
@@ -722,6 +726,10 @@ async def update_model(model_id: str, req: UpdateModelRequest):
             max_context_tokens=req.max_context_tokens,
             max_output_tokens=req.max_output_tokens,
             max_tool_calls=req.max_tool_calls,
+            temperature=req.temperature,
+            max_iterations=req.max_iterations,
+            think=req.think,
+            reasoning_effort=req.reasoning_effort,
         )
         if not result:
             return JSONResponse(content={"code": 404, "message": "模型配置不存在"}, status_code=404)

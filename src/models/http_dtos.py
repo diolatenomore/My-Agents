@@ -79,6 +79,10 @@ class CreateModelRequest(BaseModel):
     max_context_tokens: Optional[int] = Field(default=200000, description="上下文窗口 token 上限")
     max_output_tokens: Optional[int] = Field(default=64000, description="单次输出最大 token 数")
     max_tool_calls: Optional[int] = Field(default=50, description="单次对话最大工具调用次数")
+    temperature: Optional[float] = Field(default=0.7, description="采样温度")
+    max_iterations: Optional[int] = Field(default=30, description="ReAct 最大迭代次数")
+    think: Optional[bool] = Field(default=True, description="是否启用 DeepSeek 思考模式")
+    reasoning_effort: Optional[str] = Field(default=None, description="OpenAI 推理强度: low/medium/high")
 
 
 class UpdateModelRequest(BaseModel):
@@ -89,6 +93,10 @@ class UpdateModelRequest(BaseModel):
     max_context_tokens: Optional[int] = None
     max_output_tokens: Optional[int] = None
     max_tool_calls: Optional[int] = None
+    temperature: Optional[float] = None
+    max_iterations: Optional[int] = None
+    think: Optional[bool] = None
+    reasoning_effort: Optional[str] = None
 
 
 class ModelConfigDTO(BaseModel):
@@ -101,5 +109,9 @@ class ModelConfigDTO(BaseModel):
     max_context_tokens: int = 200000
     max_output_tokens: int = 64000
     max_tool_calls: int = 50
+    temperature: float = 0.7
+    max_iterations: int = 30
+    think: int = 1
+    reasoning_effort: Optional[str] = None
     created_at: str = ""
     updated_at: str = ""

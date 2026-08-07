@@ -14,7 +14,6 @@ from openai import (
     RateLimitError,
 )
 
-from src.agent.agent_config import AgentConfig
 from src.agent.prompts import DEFAULT_SYSTEM_PROMPT
 from src.skills.loader import build_skills_catalog
 from src.tools.registry import registry
@@ -105,16 +104,18 @@ def _create_client(base_url: str, api_key: str) -> AsyncOpenAI:
     return AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 
-def _build_request_kwargs(cfg: AgentConfig) -> dict:
-    """根据配置构建 chat.completions.create 的所有参数"""
-    extra = {"thinking": {"type": "enabled" if cfg.think else "disabled"}}
+def _build_request_kwargs(model_config: dict) -> dict:
+    """根据模型配置构建 chat.completions.create 的所有参数"""
+    think_enabled = bool(model_config.get("think", 1))
+    extra = {"thinking": {"type": "enabled" if think_enabled else "disabled"}}
     kwargs: dict = {
-        "model": cfg.model,
-        "temperature": cfg.temperature,
+        "model": model_config["model"],
+        "temperature": model_config.get("temperature", 0.7),
         "extra_body": extra,
     }
-    if cfg.reasoning_effort is not None:
-        kwargs["reasoning_effort"] = cfg.reasoning_effort
+    re = model_config.get("reasoning_effort")
+    if re:
+        kwargs["reasoning_effort"] = re
     return kwargs
 
 
@@ -137,7 +138,6 @@ def _build_messages(
 async def run_agent(
     query: str,
     history: Optional[list] = None,
-    config: Optional[AgentConfig] = None,
     system_prompt: Optional[str] = None,
     tools: Optional[list] = None,
     model_id: str = "",
@@ -147,7 +147,6 @@ async def run_agent(
     Args:
         query: 用户输入
         history: 历史消息列表（由调用者从持久化存储加载）
-        config: Agent 配置
         system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
         tools: 工具列表，不传则使用所有注册工具
         model_id: 模型配置 ID（必传）
@@ -163,20 +162,15 @@ async def run_agent(
 
     from src.agent.model_manager import model_manager
 
-    cfg = config or AgentConfig()
     tools = tools or registry.get_all_schemas()
     memory_block = _get_memory_block(query)
     prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
 
     messages = _build_messages(prompt, history, query)
-    client, cfg.model = await model_manager.resolve_model(model_id)
-
-    # 从模型配置读取单次对话最大工具调用数
-    model_config = await model_manager.get_model(model_id)
-    cfg.max_tool_calls_per_turn = model_config.get("max_tool_calls") if model_config else None
+    client, model_config = await model_manager.resolve_model(model_id)
 
     try:
-        iterations, total_tool_calls, token_usage = await _execute_loop(client, cfg, messages, tools)
+        iterations, total_tool_calls, token_usage = await _execute_loop(client, model_config, messages, tools)
     except Exception as e:
         raise ValueError(translate_openai_error(e)) from e
 
@@ -200,7 +194,6 @@ async def run_agent_stream(
     query: str,
     cancel_event: asyncio.Event,
     history: Optional[list] = None,
-    config: Optional[AgentConfig] = None,
     system_prompt: Optional[str] = None,
     tools: Optional[list] = None,
     session_id: str = "",
@@ -217,11 +210,11 @@ async def run_agent_stream(
         - cancelled:  取消信号（如 {"type":"cancelled","content":"", "_messages": 截断后的消息} ）
         - done:       全部完成（如 {"type":"done","content":"最终回复"}，含 "_messages" 供调用者持久化）
         - error:      发生错误（如 {"type":"error","message":"..."}）
+        - threshold_tool_call: 达到工具调用上限后的工具请求（需审批）
 
     Args:
         query: 用户输入
         history: 历史消息列表（由调用者从持久化存储加载）
-        config: Agent 配置
         system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
         tools: 工具列表，不传则使用所有注册工具
         session_id: 会话 ID，用于审批等待的中断
@@ -238,24 +231,21 @@ async def run_agent_stream(
 
     from src.agent.model_manager import model_manager
 
-    cfg = config or AgentConfig()
     tools = tools or registry.get_all_schemas()
     memory_block = _get_memory_block(query)
     prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
 
     messages = _build_messages(prompt, history, query)
-    client, cfg.model = await model_manager.resolve_model(model_id)
+    client, model_config = await model_manager.resolve_model(model_id)
 
-    # TODO 废弃AgentConfig后统一读取配置
-    # 从模型配置读取单次对话最大工具调用数
-    model_config = await model_manager.get_model(model_id)
-    cfg.max_tool_calls_per_turn = model_config.get("max_tool_calls") if model_config else None
+    # 从模型配置统一提取运行时参数
+    max_iterations = model_config.get("max_iterations", 30)
 
     try:
         token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "context_tokens": 0}
         tool_calls_this_turn = 0
 
-        for iteration in range(1, cfg.max_iterations + 1):
+        for iteration in range(1, max_iterations + 1):
 
             # 检查点1：每轮迭代开始前检查取消信号
             if cancel_event.is_set():
@@ -267,8 +257,7 @@ async def run_agent_stream(
                 }
                 return
 
-            if cfg.verbose:
-                logger.info(f"[Agent] 迭代 {iteration}/{cfg.max_iterations}")
+            logger.info(f"[Agent] 迭代 {iteration}/{max_iterations}")
 
             openai_msgs = _to_openai_messages(messages)
             stream = await client.chat.completions.create(
@@ -376,14 +365,13 @@ async def run_agent_stream(
                 return
 
             # 执行工具调用（并行，边完成边 yield）
-            # TODO 直接加到cfg.max_tool_calls_per_turn就无需在approval_registry内维护？
             # 每轮计算有效阈值 = 基础值 + 用户临时提升量
             from src.tools.approval import approval_registry
-            base_max = cfg.max_tool_calls_per_turn
+            base_max = model_config.get("max_tool_calls")
             effective_max = (base_max + approval_registry.get_threshold_raise(session_id)) if (base_max and base_max > 0) else None
 
             async for event in _execute_tool_calls_parallel(
-                tool_calls, session_id, cancel_event, cfg,
+                tool_calls, session_id, cancel_event, model_config,
                 tool_calls_so_far=tool_calls_this_turn,
                 max_tool_calls_threshold=effective_max,
             ):
@@ -401,13 +389,13 @@ async def run_agent_stream(
 
         # 达到最大迭代次数
         # TODO 还需考虑上下文满了的情况
-        summary = f"已达到最大迭代次数 {cfg.max_iterations}，请基于已有信息给出总结。"
+        summary = f"已达到最大迭代次数 {max_iterations}，请基于已有信息给出总结。"
         messages.append({"role": "user", "content": summary})  # TODO 角色为user合适吗？
         openai_msgs = _to_openai_messages(messages)
         response = await client.chat.completions.create(
             messages=openai_msgs,
             tools=tools,  # TODO 是否不应该传工具
-            **_build_request_kwargs(cfg),
+            **_build_request_kwargs(model_config),
         )
         choice = response.choices[0].message
         final_content = choice.content or ""
@@ -425,7 +413,7 @@ async def run_agent_stream(
 
 
 async def _execute_loop(
-    client: AsyncOpenAI, cfg: AgentConfig, messages: list[dict], tools: list,
+    client: AsyncOpenAI, model_config: dict, messages: list[dict], tools: list,
 ) -> tuple[int, int, dict]:
     """非流式版本的 ReAct 循环执行体
 
@@ -435,19 +423,19 @@ async def _execute_loop(
     """
     iterations = 0
     total_tool_calls = 0
+    max_iterations = model_config.get("max_iterations", 30)
     token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "context_tokens": 0}
 
-    while iterations < cfg.max_iterations:
+    while iterations < max_iterations:
         iterations += 1
 
-        if cfg.verbose:
-            logger.info(f"[Agent] 迭代 {iterations}/{cfg.max_iterations}")
+        logger.info(f"[Agent] 迭代 {iterations}/{max_iterations}")
 
         openai_msgs = _to_openai_messages(messages)
         response = await client.chat.completions.create(
             messages=openai_msgs,
             tools=tools,
-            **_build_request_kwargs(cfg),
+            **_build_request_kwargs(model_config),
         )
         choice = response.choices[0].message
         if response.usage:
@@ -463,8 +451,7 @@ async def _execute_loop(
         messages.append(msg)
 
         if not msg["tool_calls"]:
-            if cfg.verbose:
-                logger.info(f"[Agent] 模型完成输出，共 {iterations} 次迭代，{total_tool_calls} 次工具调用")
+            logger.info(f"[Agent] 模型完成输出，共 {iterations} 次迭代，{total_tool_calls} 次工具调用")
             return iterations, total_tool_calls, token_usage
 
         for tc in msg["tool_calls"]:
@@ -473,13 +460,11 @@ async def _execute_loop(
             tool_args = tc["args"]
             tool_call_id = tc["id"]
 
-            if cfg.verbose:
-                logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
+            logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
 
             observation = await registry.dispatch(tool_name, tool_args)
 
-            if cfg.verbose:
-                logger.info(f"[Agent] 工具返回: {str(observation)[:200]}{'...' if len(str(observation)) > 200 else ''}")
+            logger.info(f"[Agent] 工具返回: {str(observation)[:200]}{'...' if len(str(observation)) > 200 else ''}")
 
             messages.append({
                 "role": "tool",
@@ -488,13 +473,13 @@ async def _execute_loop(
             })
 
     # 达到最大迭代次数
-    summary = f"已达到最大迭代次数 {cfg.max_iterations}，请基于已有信息给出总结。"
+    summary = f"已达到最大迭代次数 {max_iterations}，请基于已有信息给出总结。"
     messages.append({"role": "user", "content": summary})
     openai_msgs = _to_openai_messages(messages)
     response = await client.chat.completions.create(
         messages=openai_msgs,
         tools=tools,
-        **_build_request_kwargs(cfg),
+        **_build_request_kwargs(model_config),
     )
     choice = response.choices[0].message
     if response.usage:
@@ -510,7 +495,7 @@ async def _execute_tool_calls_parallel(
     tool_calls: list[dict],
     session_id: str,
     cancel_event: asyncio.Event,
-    cfg: AgentConfig,
+    model_config: dict,
     tool_calls_so_far: int = 0,
     max_tool_calls_threshold: Optional[int] = None,
 ) -> AsyncGenerator[dict, None]:
@@ -563,18 +548,16 @@ async def _execute_tool_calls_parallel(
 
         if not needs_approval:
             # 非审批工具：直接执行
-            if cfg.verbose:
-                logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
+            logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
             try:
                 result = await registry.dispatch(tool_name, tool_args)
                 result_str = str(result)
             except Exception as e:
                 result_str = f"工具执行失败: {e}"
                 logger.error(f"[Agent] 工具 '{tool_name}' 执行失败: {e}")
-            if cfg.verbose:
-                logger.info(
-                    f"[Agent] 工具返回: {result_str[:200]}{'...' if len(result_str) > 200 else ''}"
-                )
+            logger.info(
+                f"[Agent] 工具返回: {result_str[:200]}{'...' if len(result_str) > 200 else ''}"
+            )
             return index, tc, result_str
         else:
             # 审批工具：等待审批后执行
@@ -602,18 +585,16 @@ async def _execute_tool_calls_parallel(
             elif approved is False:
                 return index, tc, "用户拒绝了该工具的执行"
 
-            if cfg.verbose:
-                logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
+            logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
             try:
                 result = await registry.dispatch(tool_name, tool_args)
                 result_str = str(result)
             except Exception as e:
                 result_str = f"工具执行失败: {e}"
                 logger.error(f"[Agent] 工具 '{tool_name}' 执行失败: {e}")
-            if cfg.verbose:
-                logger.info(
-                    f"[Agent] 工具返回: {result_str[:200]}{'...' if len(result_str) > 200 else ''}"
-                )
+            logger.info(
+                f"[Agent] 工具返回: {result_str[:200]}{'...' if len(result_str) > 200 else ''}"
+            )
             return index, tc, result_str
 
     # 创建所有 task（立即开始并发执行）

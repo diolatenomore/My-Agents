@@ -335,6 +335,30 @@
           <label>单次对话最大工具调用轮数</label>
           <input id="modelFormMaxToolCalls" type="number" value="50" placeholder="50">
         </div>
+        <div class="form-row">
+          <label>Temperature (采样温度)</label>
+          <input id="modelFormTemperature" type="number" step="0.1" min="0" max="2" value="0.7" placeholder="0.7">
+        </div>
+        <div class="form-row">
+          <label>最大迭代次数</label>
+          <input id="modelFormMaxIterations" type="number" min="1" max="100" value="30" placeholder="30">
+        </div>
+        <div class="form-row">
+          <label>思考模式 (DeepSeek)</label>
+          <select id="modelFormThink">
+            <option value="1">启用</option>
+            <option value="0">禁用</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>推理强度 (OpenAI)</label>
+          <select id="modelFormReasoningEffort">
+            <option value="">不设置</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
       </div>
       <div class="form-actions">
         <button class="cancel-btn" onclick="hideModelForm()">取消</button>
@@ -1342,6 +1366,10 @@ function showModelForm(model) {
     document.getElementById('modelFormCtxTokens').value = model.max_context_tokens ?? 200000;
     document.getElementById('modelFormMaxTokens').value = model.max_output_tokens ?? 64000;
     document.getElementById('modelFormMaxToolCalls').value = model.max_tool_calls ?? 50;
+    document.getElementById('modelFormTemperature').value = model.temperature ?? 0.7;
+    document.getElementById('modelFormMaxIterations').value = model.max_iterations ?? 30;
+    document.getElementById('modelFormThink').value = model.think ?? 1;
+    document.getElementById('modelFormReasoningEffort').value = model.reasoning_effort ?? '';
   } else {
     document.getElementById('editModelId').value = '';
     document.getElementById('modelFormName').value = '';
@@ -1351,6 +1379,10 @@ function showModelForm(model) {
     document.getElementById('modelFormCtxTokens').value = 200000;
     document.getElementById('modelFormMaxTokens').value = 64000;
     document.getElementById('modelFormMaxToolCalls').value = 50;
+    document.getElementById('modelFormTemperature').value = 0.7;
+    document.getElementById('modelFormMaxIterations').value = 30;
+    document.getElementById('modelFormThink').value = 1;
+    document.getElementById('modelFormReasoningEffort').value = '';
   }
 }
 
@@ -1368,6 +1400,10 @@ async function saveModel() {
   const max_context_tokens = parseInt(document.getElementById('modelFormCtxTokens').value) || 200000;
   const max_output_tokens = parseInt(document.getElementById('modelFormMaxTokens').value) || 64000;
   const max_tool_calls = parseInt(document.getElementById('modelFormMaxToolCalls').value) || 50;
+  const temperature = parseFloat(document.getElementById('modelFormTemperature').value) || 0.7;
+  const max_iterations = parseInt(document.getElementById('modelFormMaxIterations').value) || 30;
+  const think = parseInt(document.getElementById('modelFormThink').value);
+  const reasoning_effort = document.getElementById('modelFormReasoningEffort').value || null;
 
   if (!name || !base_url || !model || !api_key) {
     alert('所有字段都不能为空');
@@ -1376,17 +1412,18 @@ async function saveModel() {
 
   try {
     let res;
+    const body = { name, base_url, model, api_key, max_context_tokens, max_output_tokens, max_tool_calls, temperature, max_iterations, think, reasoning_effort };
     if (editId) {
       res = await fetch(`/api/models/${editId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, base_url, model, api_key, max_context_tokens, max_output_tokens, max_tool_calls }),
+        body: JSON.stringify(body),
       });
     } else {
       res = await fetch('/api/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, base_url, model, api_key, max_context_tokens, max_output_tokens, max_tool_calls }),
+        body: JSON.stringify(body),
       });
     }
     const result = await res.json();
