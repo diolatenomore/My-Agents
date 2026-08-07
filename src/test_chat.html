@@ -1282,11 +1282,16 @@ function renderModelList(models) {
     el.innerHTML = '<div class="empty-state">暂无模型配置</div>';
     return;
   }
-  el.innerHTML = models.map(m => `
+  el.innerHTML = models.map(m => {
+    const thinkLabel = m.think ? '思考: 开' : '思考: 关';
+    const reLabel = m.reasoning_effort ? `推理: ${m.reasoning_effort}` : '';
+    const advInfo = [thinkLabel, reLabel].filter(Boolean).join(' · ');
+    return `
     <div class="model-row">
       <div class="model-info">
         <div class="model-name">${escapeHtml(m.name)}</div>
         <div class="model-detail">${escapeHtml(m.model)} · ${escapeHtml(m.base_url)}</div>
+        <div class="model-detail" style="font-size:11px;color:#888;">Temp: ${m.temperature ?? 0.7} · 迭代上限: ${m.max_iterations ?? 30}${advInfo ? ' · ' + advInfo : ''}</div>
       </div>
       <div class="model-status">
         <span class="model-badge active">活跃</span>
@@ -1296,7 +1301,7 @@ function renderModelList(models) {
         <button class="del-btn" onclick="deleteModel('${m.id}')">删除</button>
       </div>
     </div>
-  `).join('');
+  `;}).join('');
 }
 
 async function loadModelSelector() {

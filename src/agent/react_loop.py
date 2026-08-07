@@ -265,7 +265,7 @@ async def run_agent_stream(
                 tools=tools,
                 stream=True,
                 stream_options={"include_usage": True},
-                **_build_request_kwargs(cfg),
+                **_build_request_kwargs(model_config),
             )
 
             full_content = ""
@@ -371,7 +371,7 @@ async def run_agent_stream(
             effective_max = (base_max + approval_registry.get_threshold_raise(session_id)) if (base_max and base_max > 0) else None
 
             async for event in _execute_tool_calls_parallel(
-                tool_calls, session_id, cancel_event, model_config,
+                tool_calls, session_id, cancel_event,
                 tool_calls_so_far=tool_calls_this_turn,
                 max_tool_calls_threshold=effective_max,
             ):
@@ -495,7 +495,6 @@ async def _execute_tool_calls_parallel(
     tool_calls: list[dict],
     session_id: str,
     cancel_event: asyncio.Event,
-    model_config: dict,
     tool_calls_so_far: int = 0,
     max_tool_calls_threshold: Optional[int] = None,
 ) -> AsyncGenerator[dict, None]:
