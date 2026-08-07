@@ -509,7 +509,6 @@ async def _execute_tool_calls_parallel(
         static_approval = registry.requires_approval(tool_name)
         threshold_exceeded = (
             max_tool_calls_threshold is not None
-            and max_tool_calls_threshold > 0  # TODO 这两行何意味？
             and (tool_calls_so_far + i + 1) > max_tool_calls_threshold
         )
         needs_approval = static_approval or threshold_exceeded

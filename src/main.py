@@ -340,7 +340,6 @@ async def decide_tool(
 ):
     """工具执行审批决策，可选提升当前对话的工具调用上限"""
     approval_registry.decide(session_id, tool_call_id, approved)
-    # TODO 是否不应该直接复用？
     if approved and raise_limit_by is not None and raise_limit_by >= 1:
         approval_registry.raise_threshold(session_id, raise_limit_by)
         return JSONResponse(content={
