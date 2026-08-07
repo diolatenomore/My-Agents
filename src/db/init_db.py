@@ -124,7 +124,7 @@ async def init_db():
                 is_active INTEGER NOT NULL DEFAULT 1,
                 max_context_tokens INTEGER NOT NULL DEFAULT 200000,
                 max_output_tokens INTEGER NOT NULL DEFAULT 64000,
-                max_tool_calls INTEGER NOT NULL DEFAULT 200,
+                max_tool_calls INTEGER NOT NULL DEFAULT 50,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             )

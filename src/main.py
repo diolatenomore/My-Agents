@@ -7,11 +7,12 @@ import uuid
 import zipfile
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, File, HTTPException, Path, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Path, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import asyncio
+from typing import Optional
 
 from src.session.manager import SessionManager
 from src.db.sqlite_pool import db_pool
@@ -257,6 +258,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
     finally:
         cancel_registry.clear(session_id)
+        approval_registry.clear_threshold(session_id)
         await clean_vfs()
         clean_current_task_id()
         if messages:
@@ -330,9 +332,22 @@ async def process_review_item(task_id: str = Path(...), item_id: str = Path(...)
 # ---- 工具审批接口 ----
 
 @app.post('/api/tools/decide/{session_id}/{tool_call_id}')
-async def decide_tool(session_id: str, tool_call_id: str, approved: bool = True):
-    """工具执行审批决策"""
+async def decide_tool(
+    session_id: str,
+    tool_call_id: str,
+    approved: bool = True,
+    raise_limit_by: Optional[int] = Query(None, ge=1, description="提升上限量，正整数，仅 approved=true 时有效"),
+):
+    """工具执行审批决策，可选提升当前对话的工具调用上限"""
     approval_registry.decide(session_id, tool_call_id, approved)
+    # TODO 是否不应该直接复用？
+    if approved and raise_limit_by is not None and raise_limit_by >= 1:
+        approval_registry.raise_threshold(session_id, raise_limit_by)
+        return JSONResponse(content={
+            "code": 200,
+            "message": f"已通过，上限已提升 {raise_limit_by}",
+            "new_threshold_raise": approval_registry.get_threshold_raise(session_id),
+        })
     return JSONResponse(content={"code": 200, "message": "已通过" if approved else "已拒绝"})
 
 

@@ -171,6 +171,10 @@ async def run_agent(
     messages = _build_messages(prompt, history, query)
     client, cfg.model = await model_manager.resolve_model(model_id)
 
+    # 从模型配置读取单次对话最大工具调用数
+    model_config = await model_manager.get_model(model_id)
+    cfg.max_tool_calls_per_turn = model_config.get("max_tool_calls") if model_config else None
+
     try:
         iterations, total_tool_calls, token_usage = await _execute_loop(client, cfg, messages, tools)
     except Exception as e:
@@ -242,8 +246,14 @@ async def run_agent_stream(
     messages = _build_messages(prompt, history, query)
     client, cfg.model = await model_manager.resolve_model(model_id)
 
+    # TODO 废弃AgentConfig后统一读取配置
+    # 从模型配置读取单次对话最大工具调用数
+    model_config = await model_manager.get_model(model_id)
+    cfg.max_tool_calls_per_turn = model_config.get("max_tool_calls") if model_config else None
+
     try:
         token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "context_tokens": 0}
+        tool_calls_this_turn = 0
 
         for iteration in range(1, cfg.max_iterations + 1):
 
@@ -366,8 +376,16 @@ async def run_agent_stream(
                 return
 
             # 执行工具调用（并行，边完成边 yield）
+            # TODO 直接加到cfg.max_tool_calls_per_turn就无需在approval_registry内维护？
+            # 每轮计算有效阈值 = 基础值 + 用户临时提升量
+            from src.tools.approval import approval_registry
+            base_max = cfg.max_tool_calls_per_turn
+            effective_max = (base_max + approval_registry.get_threshold_raise(session_id)) if (base_max and base_max > 0) else None
+
             async for event in _execute_tool_calls_parallel(
-                tool_calls, session_id, cancel_event, cfg
+                tool_calls, session_id, cancel_event, cfg,
+                tool_calls_so_far=tool_calls_this_turn,
+                max_tool_calls_threshold=effective_max,
             ):
                 if event["type"] == "_tool_results_done":
                     # 全部执行完成，按原始顺序追加 tool 消息到 messages
@@ -377,6 +395,7 @@ async def run_agent_stream(
                             "content": result,
                             "tool_call_id": tc["id"],
                         })
+                    tool_calls_this_turn += len(tool_calls)
                     continue
                 yield event
 
@@ -492,32 +511,57 @@ async def _execute_tool_calls_parallel(
     session_id: str,
     cancel_event: asyncio.Event,
     cfg: AgentConfig,
+    tool_calls_so_far: int = 0,
+    max_tool_calls_threshold: Optional[int] = None,
 ) -> AsyncGenerator[dict, None]:
     """并行执行工具调用，先 yield 全部 tool_call，再按完成顺序逐个 yield tool_result"""
     from src.tools.approval import approval_registry
 
     # ===== Phase 1: Yield 全部 tool_call 事件 =====
-    for tc in tool_calls:
-        if registry.requires_approval(tc["name"]):
+    needs_approval_list: list[bool] = []  # 按顺序维护每个工具调用是否需要审批
+
+    for i, tc in enumerate(tool_calls):
+        tool_name = tc["name"]
+        static_approval = registry.requires_approval(tool_name)
+        threshold_exceeded = (
+            max_tool_calls_threshold is not None
+            and max_tool_calls_threshold > 0  # TODO 这两行何意味？
+            and (tool_calls_so_far + i + 1) > max_tool_calls_threshold
+        )
+        needs_approval = static_approval or threshold_exceeded
+        needs_approval_list.append(needs_approval)
+
+        if threshold_exceeded:
+            # 纯阈值超标 → 新事件类型 threshold_tool_call
+            yield {
+                "type": "threshold_tool_call",
+                "name": tool_name,
+                "args": tc["args"],
+                "tool_call_id": tc["id"],
+                "current_tool_calls": tool_calls_so_far + i + 1,
+                "max_tool_calls": max_tool_calls_threshold,
+            }
+        elif static_approval:
+            # 静态审批工具（如 execute）→ 现有事件
             yield {
                 "type": "tool_call",
-                "name": tc["name"],
+                "name": tool_name,
                 "args": tc["args"],
                 "requires_approval": True,
                 "tool_call_id": tc["id"],
             }
         else:
-            yield {"type": "tool_call", "name": tc["name"], "args": tc["args"]}
+            yield {"type": "tool_call", "name": tool_name, "args": tc["args"]}
 
     # ===== Phase 2+3 合并：并发执行 + 边完成边 yield =====
 
-    async def _run_one(index: int, tc: dict) -> tuple[int, dict, str]:
+    async def _run_one(index: int, tc: dict, needs_approval: bool) -> tuple[int, dict, str]:
         """执行单个工具（非审批直接执行，审批等待后执行）"""
         tool_name = tc["name"]
         tool_args = tc["args"]
         tool_call_id = tc["id"]
 
-        if not registry.requires_approval(tool_name):
+        if not needs_approval:
             # 非审批工具：直接执行
             if cfg.verbose:
                 logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
@@ -552,7 +596,10 @@ async def _execute_tool_calls_parallel(
             approved = approval_registry.get_decision(session_id, tool_call_id)
             approval_registry.clear(session_id, tool_call_id)
 
-            if not approved:
+
+            if approved is None:
+                return index, tc, "用户长时间未审批，工具调用已超时"
+            elif approved is False:
                 return index, tc, "用户拒绝了该工具的执行"
 
             if cfg.verbose:
@@ -570,7 +617,7 @@ async def _execute_tool_calls_parallel(
             return index, tc, result_str
 
     # 创建所有 task（立即开始并发执行）
-    tasks = [asyncio.create_task(_run_one(i, tc)) for i, tc in enumerate(tool_calls)]
+    tasks = [asyncio.create_task(_run_one(i, tc, needs_approval_list[i])) for i, tc in enumerate(tool_calls)]
 
     # results 收集，供后续按原始顺序构造 messages
     results: dict[int, str] = {}

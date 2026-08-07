@@ -72,7 +72,7 @@ class ModelManager:
 
     async def create_model(self, name: str, base_url: str, model: str, api_key: str,
                            max_context_tokens: int = 200000, max_output_tokens: int = 64000,
-                           max_tool_calls: int = 200) -> dict:
+                           max_tool_calls: int = 50) -> dict:
         """创建新模型配置"""
         model_id = str(uuid.uuid4())
         env_var_name = f"{ENV_KEY_PREFIX}{_sanitize_name(name)}"

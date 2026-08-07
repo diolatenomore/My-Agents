@@ -38,6 +38,9 @@
   .approval-actions .approve-btn:hover { background: #1b5e20; }
   .approval-actions .reject-btn { background: #c62828; }
   .approval-actions .reject-btn:hover { background: #b71c1c; }
+  .approval-actions .approve-raise-btn { background: #1565c0; }
+  .approval-actions .approve-raise-btn:hover { background: #0d47a1; }
+  .raise-limit-group { display: flex; align-items: center; gap: 4px; }
   .msg.tool-result { background: #e8f5e9; align-self: flex-start; font-family: monospace; font-size: 13px; }
   .msg .label { font-weight: 600; font-size: 11px; color: #666; margin-bottom: 4px; text-transform: uppercase; }
   .msg .content { white-space: pre-wrap; word-break: break-word; }
@@ -329,8 +332,8 @@
           <input id="modelFormMaxTokens" type="number" value="64000" placeholder="64000">
         </div>
         <div class="form-row">
-          <label>最大工具调用轮数</label>
-          <input id="modelFormMaxToolCalls" type="number" value="200" placeholder="200">
+          <label>单次对话最大工具调用轮数</label>
+          <input id="modelFormMaxToolCalls" type="number" value="50" placeholder="50">
         </div>
       </div>
       <div class="form-actions">
@@ -636,6 +639,22 @@ async function send() {
             scrollBottom();
             break;
 
+          case 'threshold_tool_call':
+            label.textContent = `⚠️ 工具调用（已达上限 ${parsed.current_tool_calls}/${parsed.max_tool_calls}）`;
+            const thTcDiv = document.createElement('div');
+            thTcDiv.className = 'msg tool-call approval-pending';
+            thTcDiv.innerHTML = `<div class="label">⚠️ 工具调用（已达上限 ${parsed.current_tool_calls}/${parsed.max_tool_calls}，需审批）</div><div class="content">${escapeHtml(parsed.name)}(${escapeHtml(JSON.stringify(parsed.args))})</div><div class="approval-actions"><button class="reject-btn">拒绝</button><button class="approve-btn">通过</button><span class="raise-limit-group"><input class="raise-limit-input" type="number" min="1" value="5" style="width:48px;padding:2px 4px;font-size:12px;border-radius:4px;border:1px solid #666;background:#333;color:#fff;"><button class="approve-raise-btn">通过并提高上限</button></span></div>`;
+            messagesEl.insertBefore(thTcDiv, assistantDiv);
+            thTcDiv.querySelector('.reject-btn').onclick = () => decideTool(parsed.tool_call_id, false, thTcDiv);
+            thTcDiv.querySelector('.approve-btn').onclick = () => decideTool(parsed.tool_call_id, true, thTcDiv);
+            thTcDiv.querySelector('.approve-raise-btn').onclick = () => {
+              const input = thTcDiv.querySelector('.raise-limit-input');
+              const val = parseInt(input.value) || 1;
+              decideTool(parsed.tool_call_id, true, thTcDiv, val);
+            };
+            scrollBottom();
+            break;
+
           case 'tool_result':
             label.textContent = `🔧 工具返回`;
             const trDiv = document.createElement('div');
@@ -760,15 +779,20 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
-async function decideTool(toolCallId, approved, cardEl) {
+async function decideTool(toolCallId, approved, cardEl, raiseLimitBy = null) {
   const sid = currentSessionId;
   if (!sid) return;
   try {
-    await fetch(`/api/tools/decide/${sid}/${toolCallId}?approved=${approved}`, { method: 'POST' });
+    let url = `/api/tools/decide/${sid}/${toolCallId}?approved=${approved}`;
+    if (approved && raiseLimitBy != null && raiseLimitBy >= 1) {
+      url += `&raise_limit_by=${raiseLimitBy}`;
+    }
+    await fetch(url, { method: 'POST' });
     // 隐藏审批按钮，显示决策结果
     const actions = cardEl.querySelector('.approval-actions');
     if (actions) {
-      actions.innerHTML = `<span style="font-size:12px;color:${approved ? '#2e7d32' : '#c62828'}">${approved ? '✓ 已通过' : '✗ 已拒绝'}</span>`;
+      const suffix = (raiseLimitBy != null && raiseLimitBy >= 1) ? `（上限 +${raiseLimitBy}）` : '';
+      actions.innerHTML = `<span style="font-size:12px;color:${approved ? '#2e7d32' : '#c62828'}">${approved ? '✓ 已通过' + suffix : '✗ 已拒绝'}</span>`;
     }
   } catch (err) {
     console.error('审批请求失败:', err);
@@ -1317,7 +1341,7 @@ function showModelForm(model) {
     document.getElementById('modelFormKey').value = '';
     document.getElementById('modelFormCtxTokens').value = model.max_context_tokens ?? 200000;
     document.getElementById('modelFormMaxTokens').value = model.max_output_tokens ?? 64000;
-    document.getElementById('modelFormMaxToolCalls').value = model.max_tool_calls ?? 200;
+    document.getElementById('modelFormMaxToolCalls').value = model.max_tool_calls ?? 50;
   } else {
     document.getElementById('editModelId').value = '';
     document.getElementById('modelFormName').value = '';
@@ -1326,7 +1350,7 @@ function showModelForm(model) {
     document.getElementById('modelFormKey').value = '';
     document.getElementById('modelFormCtxTokens').value = 200000;
     document.getElementById('modelFormMaxTokens').value = 64000;
-    document.getElementById('modelFormMaxToolCalls').value = 200;
+    document.getElementById('modelFormMaxToolCalls').value = 50;
   }
 }
 
@@ -1343,7 +1367,7 @@ async function saveModel() {
   const api_key = document.getElementById('modelFormKey').value.trim();
   const max_context_tokens = parseInt(document.getElementById('modelFormCtxTokens').value) || 200000;
   const max_output_tokens = parseInt(document.getElementById('modelFormMaxTokens').value) || 64000;
-  const max_tool_calls = parseInt(document.getElementById('modelFormMaxToolCalls').value) || 200;
+  const max_tool_calls = parseInt(document.getElementById('modelFormMaxToolCalls').value) || 50;
 
   if (!name || !base_url || !model || !api_key) {
     alert('所有字段都不能为空');
