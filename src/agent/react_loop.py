@@ -122,6 +122,27 @@ def _build_request_kwargs(model_config: dict) -> dict:
     return kwargs
 
 
+# ========== 压缩时机 ==========
+
+def _calc_compression_threshold(model_config: dict) -> int:
+    """计算压缩触发阈值（Claude Code 方案）
+
+    effective_window = max_context_tokens - max(max_output_tokens, 20_000)
+    threshold = effective_window - 13_000
+
+    以默认值 200K 窗口 + 64K 输出上限为例：200000 - 64000 - 13000 = 123000
+    """
+    max_context = model_config.get("max_context_tokens", 200000)
+    max_output = model_config.get("max_output_tokens", 64000)
+    effective_window = max_context - max(max_output, 20000)
+    return effective_window - 13000
+
+
+async def _maybe_compress(messages: list[dict], model_config: dict, current_tokens: int):
+    """压缩钩子 — 当前为空实现，后续接入实际压缩算法"""
+    pass
+
+
 # ========== 消息构建 ==========
 
 def _build_messages(
@@ -201,6 +222,7 @@ async def run_agent_stream(
     tools: Optional[list] = None,
     session_id: str = "",
     model_id: str = "",
+    last_context_tokens: int = 0,
 ) -> AsyncGenerator[dict, None]:
     """运行 ReAct Agent 循环（流式版本），逐个 yield 事件
 
@@ -222,6 +244,7 @@ async def run_agent_stream(
         tools: 工具列表，不传则使用所有注册工具
         session_id: 会话 ID，用于审批等待的中断
         model_id: 模型配置 ID（必传）
+        last_context_tokens: 上次持久化的上下文 token 数（用于恢复压缩检查基线）
 
     Yields:
         dict: SSE 兼容的事件字典
@@ -247,6 +270,7 @@ async def run_agent_stream(
     try:
         token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "context_tokens": 0}
         tool_calls_this_turn = 0
+        last_prompt_tokens = last_context_tokens  # 从持久化恢复的基线
 
         for iteration in range(1, max_iterations + 1):
 
@@ -257,10 +281,17 @@ async def run_agent_stream(
                     "content": "",
                     "_messages": messages,
                     "token_usage": token_usage,
+                    "context_tokens": last_prompt_tokens,
                 }
                 return
 
             logger.info(f"[Agent] 迭代 {iteration}/{max_iterations}")
+
+            # 压缩时机检查：在 API 调用前检查上下文是否超过阈值
+            if last_prompt_tokens > 0:
+                threshold = _calc_compression_threshold(model_config)
+                if last_prompt_tokens >= threshold:
+                    await _maybe_compress(messages, model_config, last_prompt_tokens)
 
             openai_msgs = _to_openai_messages(messages)
             stream = await client.chat.completions.create(
@@ -294,6 +325,7 @@ async def run_agent_stream(
                         "content": full_content,
                         "_messages": messages,
                         "token_usage": token_usage,
+                        "context_tokens": last_prompt_tokens,
                     }
                     return
 
@@ -334,6 +366,7 @@ async def run_agent_stream(
 
             # 累计流式调用的 token 用量
             if stream_usage:
+                last_prompt_tokens = stream_usage.prompt_tokens
                 token_usage["prompt_tokens"] += stream_usage.prompt_tokens
                 token_usage["completion_tokens"] += stream_usage.completion_tokens
                 token_usage["context_tokens"] = stream_usage.total_tokens
@@ -350,6 +383,7 @@ async def run_agent_stream(
                     "content": full_content,
                     "_messages": messages,
                     "token_usage": token_usage,
+                    "context_tokens": last_prompt_tokens,
                     "finish_reason": "length",
                 }
                 return
@@ -383,6 +417,7 @@ async def run_agent_stream(
                     "content": full_content,
                     "_messages": messages,
                     "token_usage": token_usage,
+                    "context_tokens": last_prompt_tokens,
                 }
                 return
 
@@ -427,6 +462,7 @@ async def run_agent_stream(
             "content": final_content,
             "_messages": messages,
             "token_usage": token_usage,
+            "context_tokens": last_prompt_tokens,
         }
 
     except Exception as e:

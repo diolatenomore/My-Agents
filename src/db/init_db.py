@@ -98,10 +98,16 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
                 title TEXT DEFAULT '',
+                context_tokens INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             )
         """)
+        # 迁移：为已有 sessions 表增加 context_tokens 列
+        try:
+            await conn.execute("ALTER TABLE sessions ADD COLUMN context_tokens INTEGER DEFAULT 0")
+        except Exception:
+            pass  # 列已存在则跳过
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS session_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

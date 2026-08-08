@@ -9,6 +9,7 @@ class Session:
     """会话"""
     session_id: str
     title: str = ""
+    context_tokens: int = 0
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     message_count: int = 0

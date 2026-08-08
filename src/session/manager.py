@@ -45,6 +45,15 @@ class SessionManager:
         msg_dicts = await self.store.get_messages(session_id)
         return filter_history_messages(msg_dicts)
 
+    async def get_context_tokens(self, session_id: str) -> int:
+        """获取会话上次持久化的上下文 token 数"""
+        session = await self.store.get_session(session_id)
+        return session.context_tokens if session else 0
+
+    async def update_context_tokens(self, session_id: str, tokens: int):
+        """更新会话的上下文 token 数"""
+        await self.store.update_context_tokens(session_id, tokens)
+
     async def save_messages(self, session_id: str, messages: list[dict]):
         """保存 Agent 执行完后新增的消息到数据库
 

@@ -204,6 +204,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
 
     messages: list = []
     final_content = ""
+    last_context_tokens = 0
     history = None
     cancel_registry = app.state.cancel_registry
 
@@ -211,6 +212,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         set_current_task_id(session_id)
         await init_vfs(session_id)
         history = await session_manager.load_history(session_id)
+        ctx_tokens = await session_manager.get_context_tokens(session_id)
 
         # 系统 prompt 冻结逻辑：同一 (model, session) 在 TTL 内复用首个 prompt
         prompt_cache = app.state.system_prompt_cache
@@ -240,10 +242,12 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                 system_prompt=system_prompt,
                 session_id=session_id,
                 model_id=model_id,
+                last_context_tokens=ctx_tokens,
             ):
                 if event["type"] in ("cancelled", "done"):
                     messages = event.pop("_messages", [])
                     final_content = event.get("content", "")
+                    last_context_tokens = event.get("context_tokens", 0)
                     # 检查是否有未审批的 VFS 变更，嵌入审批树
                     from src.vfs.diff_table import DiffTable
                     from src.vfs.review_manager import ReviewManager
@@ -261,9 +265,12 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         approval_registry.clear_threshold(session_id)
         await clean_vfs()
         clean_current_task_id()
+        # TODO messages和last_context_tokens在什么情况下会为空？是否可以清楚掉if？
         if messages:
             try:
                 await session_manager.save_messages(session_id, messages)
+                if last_context_tokens:
+                    await session_manager.update_context_tokens(session_id, last_context_tokens)
             except Exception as e:
                 logger.error(f"保存会话消息失败: {e}")
 

@@ -25,6 +25,7 @@ class SessionStore:
             return Session(
                 session_id=row["session_id"],
                 title=row["title"] or "",
+                context_tokens=row["context_tokens"] if "context_tokens" in row.keys() else 0,
                 created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(),
                 updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(),
             )
@@ -68,6 +69,7 @@ class SessionStore:
                 Session(
                     session_id=row["session_id"],
                     title=row["title"] or "",
+                    context_tokens=row["context_tokens"] if "context_tokens" in row.keys() else 0,
                     created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(),
                     updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(),
                     message_count=row["msg_count"],
@@ -111,6 +113,15 @@ class SessionStore:
                 (session_id, limit),
             )).fetchall()
             return [json.loads(row["content"]) for row in rows]
+
+    @classmethod
+    async def update_context_tokens(cls, session_id: str, tokens: int):
+        """更新会话的上次上下文 token 数"""
+        async with db_pool.get_conn() as conn:
+            await conn.execute(
+                "UPDATE sessions SET context_tokens = ?, updated_at = datetime('now') WHERE session_id = ?",
+                (tokens, session_id),
+            )
 
     @classmethod
     async def get_last_n_messages(cls, session_id: str, n: int = 50) -> list[dict]:
