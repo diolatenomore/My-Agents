@@ -26,10 +26,10 @@ async def generate_title(user_message: str, assistant_message: str, model_id: st
     user_msg = user_message[:200]
     assistant_msg = assistant_message[:300]
 
-    client, model_name = await model_manager.resolve_model(model_id)
+    client, model_config = await model_manager.resolve_model(model_id)
 
     response = await client.chat.completions.create(
-        model=model_name,
+        model=model_config["model"],
         messages=[{"role": "user", "content": TITLE_PROMPT.format(
             user_msg=user_msg, assistant_msg=assistant_msg
         )}],
