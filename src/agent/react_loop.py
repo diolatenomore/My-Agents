@@ -116,6 +116,9 @@ def _build_request_kwargs(model_config: dict) -> dict:
     re = model_config.get("reasoning_effort")
     if re:
         kwargs["reasoning_effort"] = re
+    max_out = model_config.get("max_output_tokens")
+    if max_out and max_out > 0:
+        kwargs["max_tokens"] = max_out
     return kwargs
 
 
@@ -274,6 +277,7 @@ async def run_agent_stream(
             tool_call_bufs: dict[int, dict] = {}
             chunk_count = 0  # 用于取消检查的 chunk 计数
             stream_usage = None  # 流式最后一个 chunk 的 usage
+            finish_reason = None  # 流式最后一个 chunk 的 finish_reason
 
             async for chunk in stream:
                 chunk_count += 1
@@ -294,6 +298,8 @@ async def run_agent_stream(
                     return
 
                 delta = chunk.choices[0].delta if chunk.choices else None
+                if chunk.choices:
+                    finish_reason = chunk.choices[0].finish_reason or finish_reason
                 if chunk.usage:
                     stream_usage = chunk.usage
                 if not delta:
@@ -331,6 +337,22 @@ async def run_agent_stream(
                 token_usage["prompt_tokens"] += stream_usage.prompt_tokens
                 token_usage["completion_tokens"] += stream_usage.completion_tokens
                 token_usage["context_tokens"] = stream_usage.total_tokens
+
+            # 检查是否达到输出上限 → 直接结束，不解析不完整的 tool_calls
+            if finish_reason == "length":
+                logger.warning("[Agent] 模型输出达到 max_output_tokens 上限，对话终止")
+                msg = {"role": "assistant", "content": full_content}
+                if full_reasoning:
+                    msg["reasoning_content"] = full_reasoning
+                messages.append(msg)
+                yield {
+                    "type": "done",
+                    "content": full_content,
+                    "_messages": messages,
+                    "token_usage": token_usage,
+                    "finish_reason": "length",
+                }
+                return
 
             # 流结束后构造 tool_calls（内部格式） 
             tool_calls = []

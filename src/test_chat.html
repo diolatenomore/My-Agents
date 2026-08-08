@@ -693,6 +693,9 @@ async function send() {
 
           case 'done':
             label.textContent = '完成';
+            if (parsed.finish_reason === 'length') {
+              label.textContent += ' (输出达到上限，内容可能不完整)';
+            }
             if (parsed.token_usage) {
               const tu = parsed.token_usage;
               const totalTokens = (tu.prompt_tokens || 0) + (tu.completion_tokens || 0);
