@@ -227,6 +227,7 @@
     </select>
     <span style="font-weight:600;font-size:14px;margin-left:12px">当前会话:</span>
     <span class="sid" id="sessionId">-</span>
+    <span id="contextTokens" style="font-size:12px;color:#666;white-space:nowrap"></span>
     <button id="deleteSession" class="danger" style="padding:4px 12px;font-size:12px">删除</button>
   </div>
 
@@ -373,6 +374,8 @@
 // ============ 状态 ============
 let currentSessionId = localStorage.getItem('session_id') || '';
 let selectedModelId = localStorage.getItem('selected_model_id') || '';
+let modelList = []; // 模型配置列表（含 max_context_tokens）
+let lastContextTokens = 0;
 let isStreaming = false;
 let eventSource = null;
 let abortController = null;
@@ -380,12 +383,29 @@ let abortController = null;
 // ============ DOM 引用 ============
 const sessionListEl = document.getElementById('sessionList');
 const sessionIdEl = document.getElementById('sessionId');
+const contextTokensEl = document.getElementById('contextTokens');
 const messagesEl = document.getElementById('messages');
 const inputEl = document.getElementById('input');
 const sendBtn = document.getElementById('sendBtn');
 const stopBtn = document.getElementById('stopBtn');
 
 // ============ Session 管理 ============
+
+function updateContextTokensDisplay(tokens) {
+  lastContextTokens = tokens || 0;
+  if (tokens != null && tokens > 0) {
+    const model = modelList.find(m => m.id === selectedModelId);
+    const limit = model ? model.max_context_tokens : 0;
+    if (limit > 0) {
+      const pct = (tokens / limit * 100).toFixed(1);
+      contextTokensEl.textContent = `上下文使用率 ${pct}%`;
+    } else {
+      contextTokensEl.textContent = `上下文 ${tokens.toLocaleString()} tokens`;
+    }
+  } else {
+    contextTokensEl.textContent = '';
+  }
+}
 
 async function refreshSessions() {
   const res = await fetch('/api/sessions');
@@ -457,6 +477,7 @@ function newSession() {
   currentSessionId = '';
   localStorage.removeItem('session_id');
   sessionIdEl.textContent = '-';
+  updateContextTokensDisplay(0);
   messagesEl.innerHTML = '<div class="empty-state">发送消息开始对话</div>';
   document.getElementById('reviewPanel').classList.remove('show');
   refreshSessions();
@@ -473,6 +494,7 @@ async function loadSessionMessages(sid) {
   if (!sid) return;
   const res = await fetch(`/api/sessions/${sid}/messages`);
   const data = await res.json();
+  updateContextTokensDisplay(data.context_tokens || 0);
   messagesEl.innerHTML = '';
   if (!data.messages || data.messages.length === 0) {
     messagesEl.innerHTML = '<div class="empty-state">会话为空</div>';
@@ -696,15 +718,9 @@ async function send() {
             if (parsed.finish_reason === 'length') {
               label.textContent += ' (输出达到上限，内容可能不完整)';
             }
-            if (parsed.token_usage) {
-              const tu = parsed.token_usage;
-              const totalTokens = (tu.prompt_tokens || 0) + (tu.completion_tokens || 0);
-              let tokenInfo = ` (总计 ${tu.prompt_tokens || 0} 入 + ${tu.completion_tokens || 0} 出 = ${totalTokens} tokens`;
-              if (tu.context_tokens != null) {
-                tokenInfo += `，上下文 ${tu.context_tokens} tokens`;
-              }
-              tokenInfo += ')';
-              label.textContent += tokenInfo;
+            // 更新上下文 token 数（常驻 header 展示）
+            if (parsed.context_tokens != null) {
+              updateContextTokensDisplay(parsed.context_tokens);
             }
             if (parsed.content) {
               fullContent = parsed.content;
@@ -720,15 +736,9 @@ async function send() {
 
           case 'cancelled':
             label.textContent = '已中断';
-            if (parsed.token_usage) {
-              const tu = parsed.token_usage;
-              const totalTokens = (tu.prompt_tokens || 0) + (tu.completion_tokens || 0);
-              let tokenInfo = ` (总计 ${tu.prompt_tokens || 0} 入 + ${tu.completion_tokens || 0} 出 = ${totalTokens} tokens`;
-              if (tu.context_tokens != null) {
-                tokenInfo += `，上下文 ${tu.context_tokens} tokens`;
-              }
-              tokenInfo += ')';
-              label.textContent += tokenInfo;
+            // 更新上下文 token 数（常驻 header 展示）
+            if (parsed.context_tokens != null) {
+              updateContextTokensDisplay(parsed.context_tokens);
             }
             if (parsed.content) {
               fullContent = parsed.content;
@@ -1311,6 +1321,9 @@ async function loadModelSelector() {
   try {
     const res = await fetch('/api/models');
     const models = await res.json();
+    modelList = models;
+    // 模型配置加载完成后，按最新上限重算百分比展示
+    updateContextTokensDisplay(lastContextTokens);
     const sel = document.getElementById('modelSelect');
     sel.innerHTML = models.map(m =>
       `<option value="${m.id}" ${m.id === selectedModelId ? 'selected' : ''}>${escapeHtml(m.name)} (${escapeHtml(m.model)})</option>`
@@ -1340,6 +1353,8 @@ async function loadModelSelector() {
 function onModelChange() {
   selectedModelId = document.getElementById('modelSelect').value;
   localStorage.setItem('selected_model_id', selectedModelId);
+  // 切换模型后按新上限重算百分比展示
+  updateContextTokensDisplay(lastContextTokens);
   if (selectedModelId) {
     sendBtn.disabled = false;
     sendBtn.title = '';

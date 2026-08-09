@@ -2,7 +2,7 @@
 
 import asyncio
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
 
 from openai import AsyncOpenAI
@@ -47,7 +47,6 @@ class AgentResult:
     messages: list  # 完整的消息列表（含中间步骤）
     iterations: int = 0  # 实际迭代次数
     tool_calls_count: int = 0  # 工具调用次数
-    token_usage: dict = field(default_factory=dict)  # 各维度 token 用量，字段: prompt_tokens(累计), completion_tokens(累计), context_tokens(最后一轮上下文)
 
 
 # ========== 消息格式转换 ==========
@@ -194,7 +193,7 @@ async def run_agent(
     client, model_config = await model_manager.resolve_model(model_id)
 
     try:
-        iterations, total_tool_calls, token_usage = await _execute_loop(client, model_config, messages, tools)
+        iterations, total_tool_calls = await _execute_loop(client, model_config, messages, tools)
     except Exception as e:
         raise ValueError(translate_openai_error(e)) from e
 
@@ -210,7 +209,6 @@ async def run_agent(
         messages=messages,
         iterations=iterations,
         tool_calls_count=total_tool_calls,
-        token_usage=token_usage,
     )
 
 
@@ -268,9 +266,8 @@ async def run_agent_stream(
     max_iterations = model_config.get("max_iterations", 30)
 
     try:
-        token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "context_tokens": 0}
         tool_calls_this_turn = 0
-        last_prompt_tokens = last_context_tokens  # 从持久化恢复的基线
+        context_tokens = last_context_tokens  # 从持久化恢复的基线
 
         for iteration in range(1, max_iterations + 1):
 
@@ -280,18 +277,17 @@ async def run_agent_stream(
                     "type": "cancelled",
                     "content": "",
                     "_messages": messages,
-                    "token_usage": token_usage,
-                    "context_tokens": last_prompt_tokens,
+                    "context_tokens": context_tokens,
                 }
                 return
 
             logger.info(f"[Agent] 迭代 {iteration}/{max_iterations}")
 
             # 压缩时机检查：在 API 调用前检查上下文是否超过阈值
-            if last_prompt_tokens > 0:
+            if context_tokens > 0:
                 threshold = _calc_compression_threshold(model_config)
-                if last_prompt_tokens >= threshold:
-                    await _maybe_compress(messages, model_config, last_prompt_tokens)
+                if context_tokens >= threshold:
+                    await _maybe_compress(messages, model_config, context_tokens)
 
             openai_msgs = _to_openai_messages(messages)
             stream = await client.chat.completions.create(
@@ -324,8 +320,7 @@ async def run_agent_stream(
                         "type": "cancelled",
                         "content": full_content,
                         "_messages": messages,
-                        "token_usage": token_usage,
-                        "context_tokens": last_prompt_tokens,
+                        "context_tokens": context_tokens,
                     }
                     return
 
@@ -364,12 +359,9 @@ async def run_agent_stream(
                         if tc_delta.function and tc_delta.function.arguments:
                             buf["args_str"] += tc_delta.function.arguments
 
-            # 累计流式调用的 token 用量
+            # 更新当前上下文 token 基线
             if stream_usage:
-                last_prompt_tokens = stream_usage.prompt_tokens
-                token_usage["prompt_tokens"] += stream_usage.prompt_tokens
-                token_usage["completion_tokens"] += stream_usage.completion_tokens
-                token_usage["context_tokens"] = stream_usage.total_tokens
+                context_tokens = stream_usage.prompt_tokens
 
             # 检查是否达到输出上限 → 直接结束，不解析不完整的 tool_calls
             if finish_reason == "length":
@@ -382,8 +374,7 @@ async def run_agent_stream(
                     "type": "done",
                     "content": full_content,
                     "_messages": messages,
-                    "token_usage": token_usage,
-                    "context_tokens": last_prompt_tokens,
+                    "context_tokens": context_tokens,
                     "finish_reason": "length",
                 }
                 return
@@ -416,8 +407,7 @@ async def run_agent_stream(
                     "type": "done",
                     "content": full_content,
                     "_messages": messages,
-                    "token_usage": token_usage,
-                    "context_tokens": last_prompt_tokens,
+                    "context_tokens": context_tokens,
                 }
                 return
 
@@ -461,8 +451,7 @@ async def run_agent_stream(
             "type": "done",
             "content": final_content,
             "_messages": messages,
-            "token_usage": token_usage,
-            "context_tokens": last_prompt_tokens,
+            "context_tokens": context_tokens,
         }
 
     except Exception as e:
@@ -472,17 +461,15 @@ async def run_agent_stream(
 
 async def _execute_loop(
     client: AsyncOpenAI, model_config: dict, messages: list[dict], tools: list,
-) -> tuple[int, int, dict]:
+) -> tuple[int, int]:
     """非流式版本的 ReAct 循环执行体
 
     Returns:
-        (iterations, total_tool_calls, token_usage)
-        token_usage 字段: prompt_tokens(累计), completion_tokens(累计), context_tokens(最后一轮上下文)
+        (iterations, total_tool_calls)
     """
     iterations = 0
     total_tool_calls = 0
     max_iterations = model_config.get("max_iterations", 30)
-    token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "context_tokens": 0}
 
     while iterations < max_iterations:
         iterations += 1
@@ -496,10 +483,6 @@ async def _execute_loop(
             **_build_request_kwargs(model_config),
         )
         choice = response.choices[0].message
-        if response.usage:
-            token_usage["prompt_tokens"] += response.usage.prompt_tokens
-            token_usage["completion_tokens"] += response.usage.completion_tokens
-            token_usage["context_tokens"] = response.usage.prompt_tokens
 
         msg = {
             "role": "assistant",
@@ -510,7 +493,7 @@ async def _execute_loop(
 
         if not msg["tool_calls"]:
             logger.info(f"[Agent] 模型完成输出，共 {iterations} 次迭代，{total_tool_calls} 次工具调用")
-            return iterations, total_tool_calls, token_usage
+            return iterations, total_tool_calls
 
         for tc in msg["tool_calls"]:
             total_tool_calls += 1
@@ -540,13 +523,9 @@ async def _execute_loop(
         **_build_request_kwargs(model_config),
     )
     choice = response.choices[0].message
-    if response.usage:
-        token_usage["prompt_tokens"] += response.usage.prompt_tokens
-        token_usage["completion_tokens"] += response.usage.completion_tokens
-        token_usage["context_tokens"] = response.usage.prompt_tokens
     messages.append({"role": "assistant", "content": choice.content or ""})
 
-    return iterations, total_tool_calls, token_usage
+    return iterations, total_tool_calls
 
 
 async def _execute_tool_calls_parallel(

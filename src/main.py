@@ -514,9 +514,11 @@ async def update_session_title(session_id: str = Path(...), title: str = ""):
 async def get_session_messages(session_id: str = Path(...)):
     """获取会话的消息记录"""
     messages = await app.state.session_manager.store.get_messages(session_id)
+    ctx_tokens = await app.state.session_manager.get_context_tokens(session_id)
     return JSONResponse(content={
         "session_id": session_id,
         "messages": messages,
+        "context_tokens": ctx_tokens,
     })
 
 
