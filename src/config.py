@@ -40,3 +40,10 @@ MEMORY_MAX_RESULTS = 5
 # 记忆写入前的语义去重阈值（余弦距离，越小越相似）
 # 新记忆与已有同类型记忆的余弦距离 <= 此阈值时，跳过写入
 MEMORY_DEDUP_THRESHOLD = 0.2
+
+# 上下文压缩配置
+COMPACTION_TAIL_TOKEN_RATIO = 0.20   # 尾部 token 预算占可用窗口的比例
+COMPACTION_MIN_TAIL_COUNT = 5        # 尾部最少保留消息数
+COMPACTION_BUDGET_OVERFLOW = 1.5     # 单条消息可超出预算的倍数
+COMPACTION_HEAD_COUNT = 3            # 头部保护的非 system 消息数
+COMPACTION_TOOL_TRIM_THRESHOLD = 200 # Phase 1 工具输出裁剪字符阈值

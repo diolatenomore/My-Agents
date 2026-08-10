@@ -3,6 +3,7 @@
 import asyncio
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from typing import AsyncGenerator, Optional
 
 from openai import AsyncOpenAI
@@ -15,6 +16,13 @@ from openai import (
 )
 
 from src.agent.prompts import DEFAULT_SYSTEM_PROMPT
+from src.config import (
+    COMPACTION_BUDGET_OVERFLOW,
+    COMPACTION_HEAD_COUNT,
+    COMPACTION_MIN_TAIL_COUNT,
+    COMPACTION_TAIL_TOKEN_RATIO,
+    COMPACTION_TOOL_TRIM_THRESHOLD,
+)
 from src.skills.loader import build_skills_catalog
 from src.tools.registry import registry
 from src.utils.common import logger
@@ -137,9 +145,313 @@ def _calc_compression_threshold(model_config: dict) -> int:
     return effective_window - 13000
 
 
-async def _maybe_compress(messages: list[dict], model_config: dict, current_tokens: int):
-    """压缩钩子 — 当前为空实现，后续接入实际压缩算法"""
-    pass
+# ========== 压缩核心实现 ==========
+
+def _estimate_tokens(messages: list[dict]) -> int:
+    """简易 token 估算：基于字符数近似
+
+    中文 ≈ 1 token/字符，英文 ≈ 0.5 token/字符（≈ 2 字符/token）
+    取折中：1 token ≈ 1.5 字符 → token = 字符数 / 1.5
+    """
+    total = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        if not content:
+            continue
+        total += max(1, len(content) // 1.5)
+        if msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                total += max(1, len(str(tc.get("name", ""))) // 1.5)
+                total += max(1, len(str(tc.get("args", {}))) // 1.5)
+    return int(total)
+
+
+def _compute_tail_boundary(messages: list[dict], model_config: dict) -> int:
+    """Token 预算 + 消息数下限双保险计算尾部起点索引
+
+    从末尾往回累加 token，超过 tail_budget * overflow 时停下，
+    但至少保留 min_tail_count 条。
+    """
+    max_context = model_config.get("max_context_tokens", 200000)
+    max_output = model_config.get("max_output_tokens", 64000)
+    available = max_context - max_output
+    tail_budget = available * COMPACTION_TAIL_TOKEN_RATIO
+
+    accumulated = 0
+    tail_start = len(messages)
+    for i in range(len(messages) - 1, -1, -1):
+        msg_tokens = _estimate_tokens([messages[i]])
+        if accumulated + msg_tokens > tail_budget * COMPACTION_BUDGET_OVERFLOW:
+            break
+        accumulated += msg_tokens
+        tail_start = i
+
+    # 消息数下限检查
+    count = len(messages) - tail_start
+    if count < COMPACTION_MIN_TAIL_COUNT:
+        tail_start = max(0, len(messages) - COMPACTION_MIN_TAIL_COUNT)
+
+    return tail_start
+
+
+def _align_compression_boundary(messages: list[dict], tail_start: int) -> int:
+    """边界对齐：确保不会截断 tool_call/tool_result 对
+
+    从 tail_start 向前调整：如果 tail_start 处是一条 tool 消息，
+    向前找到其对应的 assistant(tool_calls)，将其也纳入尾部。
+    """
+    if tail_start <= 0 or tail_start >= len(messages):
+        return tail_start
+
+    # 构建 tool_call_id → assistant_index 的映射
+    tool_call_map: dict[str, int] = {}
+    for i, msg in enumerate(messages):
+        if msg["role"] == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if tc.get("id"):
+                    tool_call_map[tc["id"]] = i
+
+    # 扫描尾部 tool 消息，如果其 assistant 在中间区，将其拉入尾部
+    adjusted = tail_start
+    for i in range(tail_start, len(messages)):
+        msg = messages[i]
+        if msg["role"] == "tool" and msg.get("tool_call_id"):
+            call_id = msg["tool_call_id"]
+            if call_id in tool_call_map:
+                assistant_idx = tool_call_map[call_id]
+                if assistant_idx < tail_start:
+                    adjusted = min(adjusted, assistant_idx)
+
+    return adjusted
+
+
+def _extract_previous_summary(
+    middle_messages: list[dict],
+) -> tuple[str | None, list[dict]]:
+    """从中间区剥离旧摘要，返回 (旧摘要正文, 剥离后的中间消息)"""
+    previous_summary = None
+    stripped = []
+    for msg in middle_messages:
+        if msg.get("_compaction_summary"):
+            previous_summary = msg["content"]
+        else:
+            stripped.append(msg)
+    return previous_summary, stripped
+
+
+def _serialize_middle_turns(messages: list[dict]) -> str:
+    """将消息列表序列化为可读文本，用于摘要 prompt"""
+    # 建立 tool_call_id → tool_name 映射
+    tool_call_names: dict[str, str] = {}
+    for msg in messages:
+        if msg["role"] == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if tc.get("id") and tc.get("name"):
+                    tool_call_names[tc["id"]] = tc["name"]
+
+    lines = []
+    for msg in messages:
+        role = msg["role"]
+        if role == "user":
+            lines.append(f"[User]: {msg.get('content', '')}")
+        elif role == "assistant":
+            if msg.get("tool_calls"):
+                names = [tc["name"] for tc in msg["tool_calls"]]
+                lines.append(
+                    f"[Assistant(tool_calls: {', '.join(names)})]: {msg.get('content', '')}"
+                )
+            else:
+                lines.append(f"[Assistant]: {msg.get('content', '')}")
+        elif role == "tool":
+            c = msg.get("content", "")
+            preview = c[:200] + "..." if len(c) > 200 else c
+            tool_name = tool_call_names.get(msg.get("tool_call_id", ""), msg.get("tool_call_id", ""))
+            lines.append(f"[Tool Result({tool_name})]: {preview}")
+    return "\n".join(lines)
+
+def _build_summary_prompt(
+    middle: list[dict], previous_summary: str | None,
+) -> str:
+    """构建压缩摘要 prompt，参考 Hermes 的压缩提示词结构"""
+    serialized = _serialize_middle_turns(middle)
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 共享的结构化模板
+    sections = """## Historical Task Snapshot
+[最重要的字段。逐字记录用户最近一次尚未被满足的输入——用他们自己的原话。如果用户只是问了个问题也属于活动任务——这个任务就是"带着完整上下文回答那个问题"。不要因为用户没下命令式指令就写"None"；只在最后一轮已完全了结时才写"None。"]
+
+## Goal
+[用户总体想达成什么]
+
+## Constraints & Preferences
+[用户的偏好、编码风格、约束、重要决策]
+
+## Completed Actions
+[已完成动作的编号列表——包含工具、目标、结果。每条格式：N. 动作 目标 — 结果 [tool: 工具名]。文件路径、命令、行号、结果要具体]
+示例：
+1. 读取 config.py:45 — 发现 `==` 应为 `!=` [tool: read_file]
+2. 修改 config.py:45 — 把 `==` 改成 `!=` [tool: patch]
+3. 运行测试 `pytest tests/` — 3/50 失败：test_parse, test_validate, test_edge [tool: terminal]
+
+## Active State
+[当前工作状态——工作目录和分支（如有）、改动/新建的文件及各自简要说明、测试状态、运行中的进程、重要的环境细节]
+
+## Blocked
+[尚未解决的阻塞、错误或问题，包含精确的错误信息]
+
+## Key Decisions
+[重要的技术决策及其原因]
+
+## Resolved Questions
+[用户问过且已经回答的问题——要包含答案，这样以后不用重复回答]
+
+## Relevant Files
+[读取、修改或创建过的文件——各带一句简要说明]
+
+## Critical Context
+[如果不明确保留就会丢失的具体数值、错误消息、配置细节或数据。绝不包含 API 密钥、令牌、密码、凭据——一律写 [REDACTED]]"""
+
+    if previous_summary:
+        return f"""你正在更新一份上下文压缩摘要。之前的一次压缩生成了下面的摘要，此后又发生了新的对话轮次，需要把它们并入进来。
+
+<之前的摘要>
+{previous_summary}
+</之前的摘要>
+
+需要并入的新轮次：
+{serialized}
+
+用这套相同的结构来更新摘要。**保留**所有仍然相关的既有信息。把新完成的操作**追加**到编号列表（继续往下编号）。做完了的项从"Active State"移到"Completed Actions"，已回答的问题移到"Resolved Questions"，更新"Active State"为当前状态。只有明确过时的信息才删除。关键要求：必须更新"Historical Task Snapshot"，让它反映用户最近一次尚未被满足的输入。
+用用户对话时使用的语言写摘要——不要翻译、不要切换成英语。
+摘要中绝对不要包含 API 密钥、令牌、密码、机密、凭据或连接字符串——遇到任何这类内容一律替换成 [REDACTED]。
+时间锚定规则：当前日期是 {today}。已经完成的操作，要写成"已完成、带日期、过去时"的事实，而不是悬而未决的指令。绝不要把已完成的操作写得像还需要做，也绝不要给还没发生的工作编造日期。
+只写摘要正文，不要任何前言或前缀。"""
+    else:
+        return f"""你是一个负责生成上下文检查点的总结智能体。将以下对话轮次作为"前期工作的紧凑记录"的素材来源。只输出结构化的摘要，不要加问候语、前言或前缀。
+用用户对话时使用的语言写摘要——不要翻译、不要切换成英语。
+摘要中绝对不要包含 API 密钥、令牌、密码、机密、凭据或连接字符串——遇到任何这类内容一律替换成 [REDACTED]。可以记录"这里出现过凭据"这个事实，但不要保留它们的值。
+时间锚定规则：当前日期是 {today}。已经完成的操作，要写成"已完成、带日期、过去时"的事实，而不是悬而未决的指令。绝不要把已完成的操作写得像还需要做，也绝不要给还没发生的工作编造日期。
+只写摘要正文，不要任何前言或前缀。
+
+需要总结的轮次：
+{serialized}
+
+请按以下结构输出摘要（如果某一项没有可写的，内容就填None，保证摘要的结构没有缺失）：
+
+{sections}"""
+
+
+def _compress_phase1_trim_tool_outputs(messages: list[dict]) -> int:
+    """Phase 1：裁剪工具输出 — 将大于阈值的 tool 内容替换为占位符
+
+    返回估算节省的 token 数。
+    """
+    saved = 0
+    for i, msg in enumerate(messages):
+        if msg["role"] == "tool":
+            content = msg.get("content", "")
+            if len(content) > COMPACTION_TOOL_TRIM_THRESHOLD:
+                saved += _estimate_tokens([msg]) - 1  # 占位符约 1 token
+                messages[i] = {
+                    "role": "tool",
+                    "content": "[旧工具输出已清除以节省上下文空间]",
+                    "tool_call_id": msg.get("tool_call_id", ""),
+                }
+    return saved
+
+
+async def _compress_phase2_llm_summary(
+    middle: list[dict],
+    previous_summary: str | None,
+    model_config: dict,
+    client,
+    context_tokens: int,
+) -> str:
+    """Phase 2：LLM 结构化摘要
+
+    将中间区消息序列化后调用 LLM 生成摘要。
+    返回摘要文本。
+    """
+    prompt = _build_summary_prompt(middle, previous_summary, context_tokens)
+    # 摘要 token 上限：max(context_tokens * 0.2, 2000)，上限为配置的最大输出
+    max_summary_tokens = max(int(context_tokens * 0.20), 2000)
+    max_summary_tokens = min(max_summary_tokens, model_config["max_output_tokens"])
+
+    response = await client.chat.completions.create(
+        model=model_config["model"],
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=max_summary_tokens,
+    )
+    return response.choices[0].message.content or ""
+
+
+async def _compress(
+    context_messages: list[dict],
+    model_config: dict,
+    client,
+    context_tokens: int,
+) -> bool:
+    """尝试压缩 context_messages，修改原地，返回是否执行了压缩
+
+    Phase 1 裁剪 + Phase 2 摘要。
+    已有的 _compaction_summary 标记的消息会被剥离，其正文作为 previous_summary
+    注入 prompt 进行迭代更新，最终只保留一条摘要。
+    """
+    # 确定头部保护边界（跳过 system 消息）
+    head_end = 0
+    head_count = 0
+    for i, msg in enumerate(context_messages):
+        if head_count >= COMPACTION_HEAD_COUNT:
+            break
+        if msg["role"] != "system":
+            head_count += 1
+        head_end = i + 1
+
+    # 确定尾部边界
+    tail_start = _compute_tail_boundary(context_messages, model_config)
+    tail_start = _align_compression_boundary(context_messages, tail_start)
+
+    if tail_start <= head_end:
+        return False  # 没有中间区可压缩
+
+    middle = context_messages[head_end:tail_start]
+    tail = context_messages[tail_start:]
+
+    # 剥离旧摘要
+    previous_summary, stripped_middle = _extract_previous_summary(middle)
+
+    # Phase 1：裁剪工具输出
+    _compress_phase1_trim_tool_outputs(stripped_middle)
+
+    # Phase 2：LLM 摘要
+    try:
+        summary_text = await _compress_phase2_llm_summary(
+            stripped_middle, previous_summary, model_config, client, context_tokens,
+        )
+    except Exception as e:
+        logger.warning(f"[Agent] LLM 摘要生成失败: {e}，仅执行 Phase 1 裁剪")
+        summary_text = None
+
+    # 重组 context_messages
+    head = context_messages[:head_end]
+
+    if summary_text:
+        summary_msg = {
+            "role": "assistant",
+            "content": summary_text,
+            "_compaction_summary": True,  # 标记为压缩摘要，供下一轮 _extract_previous_summary 剥离并迭代更新
+        }
+        context_messages[:] = head + [summary_msg] + tail
+    else:
+        # Phase 2 失败，保留 Phase 1 裁剪后的中间消息
+        context_messages[:] = head + stripped_middle + tail
+
+    logger.info(
+        f"[Agent] 压缩完成: head={head_end}, middle={len(middle)}, tail={len(tail)}, "
+        f"summary={'success' if summary_text else 'failed'}"
+    )
+    return True
 
 
 # ========== 消息构建 ==========
@@ -148,7 +460,7 @@ def _build_messages(
     system_prompt: str, history: Optional[list], query: str
 ) -> list[dict]:
     """构建消息列表"""
-    query = _expand_skill_refs(query)  # skill注入到UserMessage，避免破坏前缀缓存
+    query = _expand_skill_refs(query)  # TODO 待改造 skill注入到UserMessage，避免破坏前缀缓存
     messages = [{"role": "system", "content": system_prompt}]
     if history:
         messages.extend(history)
@@ -213,9 +525,9 @@ async def run_agent(
 
 
 async def run_agent_stream(
-    query: str,
     cancel_event: asyncio.Event,
-    history: Optional[list] = None,
+    context_messages: list[dict],
+    display_messages: list[dict],
     system_prompt: Optional[str] = None,
     tools: Optional[list] = None,
     session_id: str = "",
@@ -236,8 +548,9 @@ async def run_agent_stream(
         - threshold_tool_call: 达到工具调用上限后的工具请求（需审批）
 
     Args:
-        query: 用户输入
-        history: 历史消息列表（由调用者从持久化存储加载）
+        cancel_event: 取消信号事件
+        context_messages: API 上下文消息列表（必传，调用者已构建完整）
+        messages: 展示消息列表（必传，调用者已构建完整，仅用于持久化和前端展示）
         system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
         tools: 工具列表，不传则使用所有注册工具
         session_id: 会话 ID，用于审批等待的中断
@@ -256,10 +569,6 @@ async def run_agent_stream(
     from src.agent.model_manager import model_manager
 
     tools = tools or registry.get_all_schemas()
-    memory_block = _get_memory_block(query)
-    prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
-
-    messages = _build_messages(prompt, history, query)
     client, model_config = await model_manager.resolve_model(model_id)
 
     # 从模型配置统一提取运行时参数
@@ -268,6 +577,7 @@ async def run_agent_stream(
     try:
         tool_calls_this_turn = 0
         context_tokens = last_context_tokens  # 从持久化恢复的基线
+        compression_happened = False
 
         for iteration in range(1, max_iterations + 1):
 
@@ -276,8 +586,10 @@ async def run_agent_stream(
                 yield {
                     "type": "cancelled",
                     "content": "",
-                    "_messages": messages,
+                    "display_messages": display_messages,
+                    "context_messages": context_messages,
                     "context_tokens": context_tokens,
+                    "compression_happened": compression_happened,
                 }
                 return
 
@@ -287,9 +599,13 @@ async def run_agent_stream(
             if context_tokens > 0:
                 threshold = _calc_compression_threshold(model_config)
                 if context_tokens >= threshold:
-                    await _maybe_compress(messages, model_config, context_tokens)
+                    compressed = await _compress(
+                        context_messages, model_config, client, context_tokens,
+                    )
+                    if compressed:
+                        compression_happened = True
 
-            openai_msgs = _to_openai_messages(messages)
+            openai_msgs = _to_openai_messages(context_messages)
             stream = await client.chat.completions.create(
                 messages=openai_msgs,
                 tools=tools,
@@ -315,12 +631,15 @@ async def run_agent_stream(
                     msg = {"role": "assistant", "content": full_content, "cancelled": True}
                     if full_reasoning:
                         msg["reasoning_content"] = full_reasoning
-                    messages.append(msg)
+                    display_messages.append(msg)
+                    context_messages.append(msg)
                     yield {
                         "type": "cancelled",
                         "content": full_content,
-                        "_messages": messages,
+                        "display_messages": display_messages,
+                        "context_messages": context_messages,
                         "context_tokens": context_tokens,
+                        "compression_happened": compression_happened,
                     }
                     return
 
@@ -369,13 +688,16 @@ async def run_agent_stream(
                 msg = {"role": "assistant", "content": full_content}
                 if full_reasoning:
                     msg["reasoning_content"] = full_reasoning
-                messages.append(msg)
+                display_messages.append(msg)
+                context_messages.append(msg)
                 yield {
                     "type": "done",
                     "content": full_content,
-                    "_messages": messages,
+                    "display_messages": display_messages,
+                    "context_messages": context_messages,
                     "context_tokens": context_tokens,
                     "finish_reason": "length",
+                    "compression_happened": compression_happened,
                 }
                 return
 
@@ -399,15 +721,18 @@ async def run_agent_stream(
                 msg["reasoning_content"] = full_reasoning
             if tool_calls:
                 msg["tool_calls"] = tool_calls
-            messages.append(msg)
+            display_messages.append(msg)
+            context_messages.append(msg)
 
             # 没有工具调用 → 模型完成
             if not tool_calls:
                 yield {
                     "type": "done",
                     "content": full_content,
-                    "_messages": messages,
+                    "display_messages": messages,
+                    "context_messages": context_messages,
                     "context_tokens": context_tokens,
+                    "compression_happened": compression_happened,
                 }
                 return
 
@@ -423,13 +748,15 @@ async def run_agent_stream(
                 max_tool_calls_threshold=effective_max,
             ):
                 if event["type"] == "_tool_results_done":
-                    # 全部执行完成，按原始顺序追加 tool 消息到 messages
+                    # 全部执行完成，按原始顺序追加 tool 消息到两个列表
                     for tc, result in zip(event["_tool_calls"], event["_ordered_results"]):
-                        messages.append({
+                        tool_msg = {
                             "role": "tool",
                             "content": result,
                             "tool_call_id": tc["id"],
-                        })
+                        }
+                        display_messages.append(tool_msg)
+                        context_messages.append(tool_msg)
                     tool_calls_this_turn += len(tool_calls)
                     continue
                 yield event
@@ -437,8 +764,9 @@ async def run_agent_stream(
         # 达到最大迭代次数
         # TODO 还需考虑上下文满了的情况
         summary = f"已达到最大迭代次数 {max_iterations}，请基于已有信息给出总结。"
-        messages.append({"role": "user", "content": summary})  # TODO 角色为user合适吗？
-        openai_msgs = _to_openai_messages(messages)
+        display_messages.append({"role": "user", "content": summary})  # TODO 角色为user合适吗？
+        context_messages.append({"role": "user", "content": summary})
+        openai_msgs = _to_openai_messages(context_messages)
         response = await client.chat.completions.create(
             messages=openai_msgs,
             tools=tools,  # TODO 是否不应该传工具
@@ -446,12 +774,15 @@ async def run_agent_stream(
         )
         choice = response.choices[0].message
         final_content = choice.content or ""
-        messages.append({"role": "assistant", "content": final_content})
+        display_messages.append({"role": "assistant", "content": final_content})
+        context_messages.append({"role": "assistant", "content": final_content})
         yield {
             "type": "done",
             "content": final_content,
-            "_messages": messages,
+            "display_messages": display_messages,
+            "context_messages": context_messages,
             "context_tokens": context_tokens,
+            "compression_happened": compression_happened,
         }
 
     except Exception as e:

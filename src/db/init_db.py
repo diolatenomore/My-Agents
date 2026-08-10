@@ -119,6 +119,18 @@ async def init_db():
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_session_messages_sid ON session_messages(session_id)")
 
+        # API 上下文消息表（压缩目标）
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS context_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_context_messages_sid ON context_messages(session_id)")
+
         # 模型配置表
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS model_configs (

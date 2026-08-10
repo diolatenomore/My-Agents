@@ -142,7 +142,7 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
         set_current_task_id(session_id)
         await init_vfs(session_id)
         try:
-            history = await session_manager.load_history(session_id)
+            history = await session_manager.load_display_history(session_id)
             result = await run_agent(augmented_query, history=history, system_prompt=system_prompt, model_id=model_id)
 
             # 如果有文件修改，处理 merge 结果，写入数据库
@@ -154,7 +154,7 @@ async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) 
             await clean_vfs()
             clean_current_task_id()
 
-        await session_manager.save_messages(session_id, result.messages)
+        await session_manager.save_display_messages(session_id, result.messages)
 
         # Fire-and-forget 提取长期记忆（按轮次间隔控制）
         if get_memory_service().should_extract(session_id):
@@ -200,19 +200,25 @@ async def chat_stream(chat_request: ChatRequest):
 async def _stream_events(query: str, session_id: str, session_manager: SessionManager, model_id: str):
     """生成 SSE 事件流"""
     from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
-    from src.agent.react_loop import _build_system_prompt, _get_memory_block
+    from src.agent.react_loop import _build_messages, _build_system_prompt, _get_memory_block
 
-    messages: list = []
+    display_messages: list = []
+    context_messages: list = []
     final_content = ""
     last_context_tokens = 0
-    history = None
+    compression_happened = False
+    display_history = None
     cancel_registry = app.state.cancel_registry
 
     try:
         set_current_task_id(session_id)
         await init_vfs(session_id)
-        history = await session_manager.load_history(session_id)
+        display_history = await session_manager.load_display_history(session_id)
         ctx_tokens = await session_manager.get_context_tokens(session_id)
+
+        # 加载 API 上下文消息（可能已压缩，不含 system prompt）
+        context_msgs_loaded = await session_manager.load_context_messages(session_id) or []
+        context_initial_count = len(context_msgs_loaded)
 
         # 系统 prompt 冻结逻辑：同一 (model, session) 在 TTL 内复用首个 prompt
         prompt_cache = app.state.system_prompt_cache
@@ -228,6 +234,15 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         dynamic_block = get_memory_service().get_dynamic_block(query)
         augmented_query = f"以下为用户原始输入：\n{query}\n\n{dynamic_block}" if dynamic_block else query
 
+        # 构建完整的 API 上下文：system prompt + 已持久化上下文 + 新 query（动态记忆版）
+        context_messages = [{"role": "system", "content": system_prompt}]
+        context_messages.extend(context_msgs_loaded)
+        context_messages.append({"role": "user", "content": augmented_query})
+
+        # 构建展示消息列表（仅用于持久化和前端展示）
+        display_history.append({"role": "user", "content": query})
+        display_messages = display_history
+
         # 提前通知前端 session_id
         yield f"event: session_ready\ndata: {json.dumps({'type': 'session_ready', 'session_id': session_id}, ensure_ascii=False)}\n\n"
 
@@ -236,18 +251,20 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
             cancel_event = cancel_registry.create(session_id)
             
             async for event in run_agent_stream(
-                augmented_query,
                 cancel_event=cancel_event,
-                history=history,
+                context_messages=context_messages,
+                display_messages=display_messages,
                 system_prompt=system_prompt,
                 session_id=session_id,
                 model_id=model_id,
                 last_context_tokens=ctx_tokens,
             ):
                 if event["type"] in ("cancelled", "done"):
-                    messages = event.pop("_messages", [])
+                    display_messages = event.pop("display_messages", [])
+                    context_messages = event.pop("context_messages", [])
                     final_content = event.get("content", "")
                     last_context_tokens = event.get("context_tokens", 0)
+                    compression_happened = event.pop("compression_happened", False)
                     # 检查是否有未审批的 VFS 变更，嵌入审批树
                     from src.vfs.diff_table import DiffTable
                     from src.vfs.review_manager import ReviewManager
@@ -265,23 +282,28 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         approval_registry.clear_threshold(session_id)
         await clean_vfs()
         clean_current_task_id()
-        # TODO messages和last_context_tokens在什么情况下会为空？是否可以清楚掉if？
-        if messages:
-            try:
-                await session_manager.save_messages(session_id, messages)
-                if last_context_tokens:
-                    await session_manager.update_context_tokens(session_id, last_context_tokens)
-            except Exception as e:
-                logger.error(f"保存会话消息失败: {e}")
+        try:
+            await session_manager.save_display_messages(session_id, display_messages)
+            if last_context_tokens:
+                await session_manager.update_context_tokens(session_id, last_context_tokens)
+            # 持久化 context_messages：压缩后全量覆盖，否则增量追加
+            if compression_happened:
+                await session_manager.overwrite_context_messages(session_id, context_messages)
+            else:
+                new_msgs = context_messages[context_initial_count:]
+                if new_msgs:
+                    await session_manager.append_context_messages(session_id, new_msgs)
+        except Exception as e:
+            logger.error(f"保存会话消息失败: {e}")
 
-            # Fire-and-forget 生成会话标题（仅新会话首轮）
-            if not history:
-                asyncio.create_task(_maybe_generate_title(session_id, messages, session_manager, model_id))
+        # Fire-and-forget 生成会话标题（仅新会话首轮）
+        if not display_history:
+            asyncio.create_task(_maybe_generate_title(session_id, display_messages, session_manager, model_id))
 
         # Fire-and-forget 提取长期记忆（按轮次间隔控制）
-        if messages and final_content and get_memory_service().should_extract(session_id):
+        if context_messages and final_content and get_memory_service().should_extract(session_id):
             asyncio.create_task(
-                get_memory_service().extract_from_messages(session_id, messages, model_id)
+                get_memory_service().extract_from_messages(session_id, context_messages, model_id)
             )
 
 
@@ -513,7 +535,7 @@ async def update_session_title(session_id: str = Path(...), title: str = ""):
 @app.get('/api/sessions/{session_id}/messages')
 async def get_session_messages(session_id: str = Path(...)):
     """获取会话的消息记录"""
-    messages = await app.state.session_manager.store.get_messages(session_id)
+    messages = await app.state.session_manager.store.get_display_messages(session_id)
     ctx_tokens = await app.state.session_manager.get_context_tokens(session_id)
     return JSONResponse(content={
         "session_id": session_id,

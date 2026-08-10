@@ -55,9 +55,8 @@ async def extract_memories(messages: list[dict], model_id: str) -> list[dict]:
         提取到的记忆列表 [{"type": ..., "key": ..., "value": ...}, ...]
         解析失败或无可提取内容时返回空列表
     """
-    # 估算字符数，截断过长上下文
-    # TODO 等待上下文压缩机制完善
-    # context = _truncate_messages(messages)
+    # 剔除头个 system prompt（Agent 的系统提示词，与记忆提取无关），其余作为上下文
+    context = messages[1:] if messages and messages[0].get("role") == "system" else messages
 
     try:
         client, model_name = await model_manager.resolve_model(model_id)
