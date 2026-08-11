@@ -137,38 +137,25 @@ class ModelManager:
             if current_key:
                 self._write_env_var(new_env_var_name, current_key)
 
-        # 构建动态 UPDATE 语句
+        # 构建动态 UPDATE 语句：仅更新传入的字段（None 表示不修改）
+        # 每个字段一行：(列名, 参数值, 值转换函数)；布尔字段统一转为 int 存储
+        field_updates = [
+            ("max_context_tokens", max_context_tokens, None),
+            ("max_output_tokens", max_output_tokens, None),
+            ("max_tool_calls", max_tool_calls, None),
+            ("temperature", temperature, None),
+            ("max_iterations", max_iterations, None),
+            ("think", think, int),
+            ("reasoning_effort", reasoning_effort, None),
+            ("approval_timeout", approval_timeout, None),
+            ("approval_timeout_auto_approve", approval_timeout_auto_approve, int),
+        ]
         set_clauses = ["name=?", "base_url=?", "model=?", "env_var_name=?", "updated_at=datetime('now')"]
         params = [new_name, new_base_url, new_model, new_env_var_name]
-
-        if max_context_tokens is not None:
-            set_clauses.append("max_context_tokens=?")
-            params.append(max_context_tokens)
-        if max_output_tokens is not None:
-            set_clauses.append("max_output_tokens=?")
-            params.append(max_output_tokens)
-        if max_tool_calls is not None:
-            set_clauses.append("max_tool_calls=?")
-            params.append(max_tool_calls)
-        if temperature is not None:
-            set_clauses.append("temperature=?")
-            params.append(temperature)
-        if max_iterations is not None:
-            set_clauses.append("max_iterations=?")
-            params.append(max_iterations)
-        if think is not None:
-            set_clauses.append("think=?")
-            params.append(int(think))
-        if reasoning_effort is not None:
-            set_clauses.append("reasoning_effort=?")
-            params.append(reasoning_effort)
-        if approval_timeout is not None:
-            set_clauses.append("approval_timeout=?")
-            params.append(approval_timeout)
-        if approval_timeout_auto_approve is not None:
-            set_clauses.append("approval_timeout_auto_approve=?")
-            params.append(int(approval_timeout_auto_approve))
-        # TODO 有没有其他做法？
+        for column, value, convert in field_updates:
+            if value is not None:
+                set_clauses.append(f"{column}=?")
+                params.append(convert(value) if convert else value)
 
         params.append(model_id)
 
