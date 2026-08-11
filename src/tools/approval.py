@@ -14,6 +14,7 @@ class ApprovalRegistry:
         self._events: dict[str, asyncio.Event] = {}   # key = "{session_id}:{tool_call_id}"
         self._decisions: dict[str, bool] = {}          # True=approved, False=rejected
         self._threshold_raises: dict[str, int] = {}    # session_id → 累计提升量（临时，不持久化）
+        self._iteration_raises: dict[str, int] = {}    # session_id → 迭代上限累计提升量
 
     def create(self, session_id: str, tool_call_id: str) -> asyncio.Event:
         """创建审批等待事件"""
@@ -50,6 +51,15 @@ class ApprovalRegistry:
     def clear_threshold(self, session_id: str):
         """清理对话结束时的阈值提升记录"""
         self._threshold_raises.pop(session_id, None)
+        self._iteration_raises.pop(session_id, None)
+
+    def raise_iteration_threshold(self, session_id: str, amount: int):
+        """提升当前对话的迭代上限（临时，不持久化）"""
+        self._iteration_raises[session_id] = self._iteration_raises.get(session_id, 0) + amount
+
+    def get_iteration_raise(self, session_id: str) -> int:
+        """获取当前对话累计提升的迭代上限量"""
+        return self._iteration_raises.get(session_id, 0)
 
 
 # 全局单例

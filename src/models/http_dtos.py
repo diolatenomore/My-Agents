@@ -83,6 +83,8 @@ class CreateModelRequest(BaseModel):
     max_iterations: Optional[int] = Field(default=30, description="ReAct 最大迭代次数")
     think: Optional[bool] = Field(default=True, description="是否启用 DeepSeek 思考模式")
     reasoning_effort: Optional[str] = Field(default=None, description="OpenAI 推理强度: low/medium/high")
+    approval_timeout: Optional[int] = Field(default=120, description="审批等待超时秒数，None 或 0 表示无限等待")
+    approval_timeout_auto_approve: bool = Field(default=False, description="超时后是否自动通过")
 
 
 class UpdateModelRequest(BaseModel):
@@ -97,6 +99,8 @@ class UpdateModelRequest(BaseModel):
     max_iterations: Optional[int] = None
     think: Optional[bool] = None
     reasoning_effort: Optional[str] = None
+    approval_timeout: Optional[int] = None
+    approval_timeout_auto_approve: Optional[bool] = None
 
 
 class ModelConfigDTO(BaseModel):
@@ -113,5 +117,7 @@ class ModelConfigDTO(BaseModel):
     max_iterations: int = 30
     think: int = 1
     reasoning_effort: Optional[str] = None
+    approval_timeout: Optional[int] = 120
+    approval_timeout_auto_approve: bool = False
     created_at: str = ""
     updated_at: str = ""

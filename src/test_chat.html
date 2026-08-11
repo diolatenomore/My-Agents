@@ -360,6 +360,17 @@
             <option value="high">high</option>
           </select>
         </div>
+        <div class="form-row">
+          <label>审批等待超时（秒，0=无限）</label>
+          <input id="modelFormApprovalTimeout" type="number" min="0" value="120" placeholder="120">
+        </div>
+        <div class="form-row">
+          <label>超时后自动通过</label>
+          <select id="modelFormApprovalTimeoutAutoApprove">
+            <option value="0">否（拒绝）</option>
+            <option value="1">是（通过）</option>
+          </select>
+        </div>
       </div>
       <div class="form-actions">
         <button class="cancel-btn" onclick="hideModelForm()">取消</button>
@@ -701,6 +712,22 @@ async function send() {
             scrollBottom();
             break;
 
+          case 'threshold_iteration':
+            label.textContent = `⚠️ 迭代（已达上限 ${parsed.current_iterations}/${parsed.max_iterations}）`;
+            const thIterDiv = document.createElement('div');
+            thIterDiv.className = 'msg tool-call approval-pending';
+            thIterDiv.innerHTML = `<div class="label">⚠️ 已达到迭代上限（${parsed.current_iterations}/${parsed.max_iterations}），是否继续？</div><div class="approval-actions"><button class="reject-btn">停止</button><button class="approve-btn">继续一轮</button><span class="raise-limit-group"><input class="raise-limit-input" type="number" min="1" value="5" style="width:48px;padding:2px 4px;font-size:12px;border-radius:4px;border:1px solid #666;background:#333;color:#fff;"><button class="approve-raise-btn">继续并提高上限</button></span></div>`;
+            messagesEl.insertBefore(thIterDiv, assistantDiv);
+            thIterDiv.querySelector('.reject-btn').onclick = () => decideTool(parsed.tool_call_id, false, thIterDiv);
+            thIterDiv.querySelector('.approve-btn').onclick = () => decideTool(parsed.tool_call_id, true, thIterDiv);
+            thIterDiv.querySelector('.approve-raise-btn').onclick = () => {
+              const input = thIterDiv.querySelector('.raise-limit-input');
+              const val = parseInt(input.value) || 1;
+              decideTool(parsed.tool_call_id, true, thIterDiv, val);
+            };
+            scrollBottom();
+            break;
+
           case 'tool_result':
             label.textContent = `🔧 工具返回`;
             const trDiv = document.createElement('div');
@@ -717,6 +744,9 @@ async function send() {
             label.textContent = '完成';
             if (parsed.finish_reason === 'length') {
               label.textContent += ' (输出达到上限，内容可能不完整)';
+            }
+            if (parsed.stop_reason === 'max_iterations') {
+              label.textContent += ' (已达迭代上限)';
             }
             // 更新上下文 token 数（常驻 header 展示）
             if (parsed.context_tokens != null) {
@@ -1393,8 +1423,10 @@ function showModelForm(model) {
     document.getElementById('modelFormMaxIterations').value = model.max_iterations ?? 30;
     document.getElementById('modelFormThink').value = model.think ?? 1;
     document.getElementById('modelFormReasoningEffort').value = model.reasoning_effort ?? '';
+    document.getElementById('modelFormApprovalTimeout').value = model.approval_timeout ?? 120;
+    document.getElementById('modelFormApprovalTimeoutAutoApprove').value = model.approval_timeout_auto_approve ? '1' : '0';
   } else {
-    document.getElementById('editModelId').value = '';
+    document.getElementById('modelFormName').value = '';
     document.getElementById('modelFormName').value = '';
     document.getElementById('modelFormUrl').value = '';
     document.getElementById('modelFormModel').value = '';
@@ -1406,6 +1438,8 @@ function showModelForm(model) {
     document.getElementById('modelFormMaxIterations').value = 30;
     document.getElementById('modelFormThink').value = 1;
     document.getElementById('modelFormReasoningEffort').value = '';
+    document.getElementById('modelFormApprovalTimeout').value = 120;
+    document.getElementById('modelFormApprovalTimeoutAutoApprove').value = '0';
   }
 }
 
@@ -1427,6 +1461,9 @@ async function saveModel() {
   const max_iterations = parseInt(document.getElementById('modelFormMaxIterations').value) || 30;
   const think = parseInt(document.getElementById('modelFormThink').value);
   const reasoning_effort = document.getElementById('modelFormReasoningEffort').value || null;
+  const approval_timeout_val = parseInt(document.getElementById('modelFormApprovalTimeout').value);
+  const approval_timeout = isNaN(approval_timeout_val) ? 120 : approval_timeout_val;
+  const approval_timeout_auto_approve = document.getElementById('modelFormApprovalTimeoutAutoApprove').value === '1';
 
   if (!name || !base_url || !model || !api_key) {
     alert('所有字段都不能为空');
@@ -1435,7 +1472,7 @@ async function saveModel() {
 
   try {
     let res;
-    const body = { name, base_url, model, api_key, max_context_tokens, max_output_tokens, max_tool_calls, temperature, max_iterations, think, reasoning_effort };
+    const body = { name, base_url, model, api_key, max_context_tokens, max_output_tokens, max_tool_calls, temperature, max_iterations, think, reasoning_effort, approval_timeout, approval_timeout_auto_approve };
     if (editId) {
       res = await fetch(`/api/models/${editId}`, {
         method: 'PUT',

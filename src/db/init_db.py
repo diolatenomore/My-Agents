@@ -147,6 +147,8 @@ async def init_db():
                 max_iterations INTEGER NOT NULL DEFAULT 30,
                 think INTEGER NOT NULL DEFAULT 1,
                 reasoning_effort TEXT,
+                approval_timeout INTEGER,
+                approval_timeout_auto_approve INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             )
@@ -158,6 +160,8 @@ async def init_db():
             "ALTER TABLE model_configs ADD COLUMN max_iterations INTEGER NOT NULL DEFAULT 30",
             "ALTER TABLE model_configs ADD COLUMN think INTEGER NOT NULL DEFAULT 1",
             "ALTER TABLE model_configs ADD COLUMN reasoning_effort TEXT",
+            "ALTER TABLE model_configs ADD COLUMN approval_timeout INTEGER",
+            "ALTER TABLE model_configs ADD COLUMN approval_timeout_auto_approve INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 await conn.execute(col_sql)

@@ -27,7 +27,7 @@ from src.models.http_dtos import (
 )
 from src.tools.loader import discover_tools
 from src.tools.approval import approval_registry
-from src.agent.react_loop import run_agent, run_agent_stream
+from src.agent.react_loop import run_agent_stream
 from src.config import STAGING_AREA_PATH
 from src.agent.model_manager import model_manager
 from src.session.cancel import CancelRegistry
@@ -93,86 +93,6 @@ async def index():
     html_path = os.path.join(os.path.dirname(__file__), 'test_chat.html')
     with open(html_path, 'r', encoding='utf-8') as f:
         return HTMLResponse(f.read())
-
-
-@app.post('/api/chat', response_model=ChatResponse)
-async def chat(chat_request: ChatRequest, request: Request):
-    query = chat_request.query
-    if not query or query.strip() == "":
-        return ChatResponse(code=401, message="参数不能为空", type="error")
-    if not chat_request.model_id:
-        return ChatResponse(code=402, message="未指定模型，请先在模型管理中添加并选择模型", type="error")
-
-    try:
-        return await _new_chat(chat_request, request.app.state.session_manager)
-    except ValueError as e:
-        return ChatResponse(code=402, message=str(e), type="error")
-    except Exception as e:
-        logger.error(e)
-        return ChatResponse(code=500, message="服务端出错", type="error")
-
-
-async def _new_chat(chat_request: ChatRequest, session_manager: SessionManager) -> ChatResponse:
-    """新 Agent 循环（非流式），带 session 管理"""
-    from src.agent.react_loop import _build_system_prompt, _get_memory_block
-
-    query = chat_request.query
-    session_id = chat_request.session_id or str(uuid.uuid4())
-    model_id = chat_request.model_id
-
-    # 系统 prompt 冻结逻辑（与流式路径一致）
-    prompt_cache = app.state.system_prompt_cache
-    frozen_prompt = prompt_cache.get(model_id, session_id)
-    if frozen_prompt:
-        system_prompt = frozen_prompt
-    else:
-        memory_block = _get_memory_block(query)
-        system_prompt = _build_system_prompt(memory_block=memory_block)
-        prompt_cache.set(model_id, session_id, system_prompt)
-
-    # 动态记忆注入 user message（随 query 变化，不碰 system prompt）
-    dynamic_block = get_memory_service().get_dynamic_block(query)
-    augmented_query = f"以下为用户的原始输入：\n{query}\n\n{dynamic_block}" if dynamic_block else query
-
-    review_tree = None
-
-    async with session_manager.lock(session_id):
-        from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
-        from src.vfs.review_manager import ReviewManager
-        set_current_task_id(session_id)
-        await init_vfs(session_id)
-        try:
-            history = await session_manager.load_display_history(session_id)
-            result = await run_agent(augmented_query, history=history, system_prompt=system_prompt, model_id=model_id)
-
-            # 如果有文件修改，处理 merge 结果，写入数据库
-            from src.vfs.diff_table import DiffTable
-            if await DiffTable.has_unreviewed(session_id):
-                review_tree = await ReviewManager.build_review_tree(session_id)
-
-        finally:
-            await clean_vfs()
-            clean_current_task_id()
-
-        await session_manager.save_display_messages(session_id, result.messages)
-
-        # Fire-and-forget 提取长期记忆（按轮次间隔控制）
-        if get_memory_service().should_extract(session_id):
-            asyncio.create_task(
-                get_memory_service().extract_from_messages(session_id, result.messages, model_id)
-            )
-
-        # Fire-and-forget 生成会话标题（仅新会话首轮）
-        if not history:
-            asyncio.create_task(_maybe_generate_title(session_id, result.messages, session_manager, model_id))
-
-    return ChatResponse(
-        code=200,
-        message=result.content,
-        type="chat",
-        session_id=session_id,
-        review_tree=review_tree,
-    )
 
 
 @app.post('/api/chat/stream')
@@ -254,7 +174,6 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
                 cancel_event=cancel_event,
                 context_messages=context_messages,
                 display_messages=display_messages,
-                system_prompt=system_prompt,
                 session_id=session_id,
                 model_id=model_id,
                 last_context_tokens=ctx_tokens,
@@ -367,15 +286,25 @@ async def decide_tool(
     approved: bool = True,
     raise_limit_by: Optional[int] = Query(None, ge=1, description="提升上限量，正整数，仅 approved=true 时有效"),
 ):
-    """工具执行审批决策，可选提升当前对话的工具调用上限"""
+    """工具执行审批决策，可选提升当前对话的工具调用上限或迭代上限"""
     approval_registry.decide(session_id, tool_call_id, approved)
     if approved and raise_limit_by is not None and raise_limit_by >= 1:
-        approval_registry.raise_threshold(session_id, raise_limit_by)
-        return JSONResponse(content={
-            "code": 200,
-            "message": f"已通过，上限已提升 {raise_limit_by}",
-            "new_threshold_raise": approval_registry.get_threshold_raise(session_id),
-        })
+        if tool_call_id.startswith("__iter__"):
+            # 迭代阈值提升
+            approval_registry.raise_iteration_threshold(session_id, raise_limit_by)
+            return JSONResponse(content={
+                "code": 200,
+                "message": f"已通过，迭代上限已提升 {raise_limit_by}",
+                "new_threshold_raise": approval_registry.get_iteration_raise(session_id),
+            })
+        else:
+            # 工具调用阈值提升
+            approval_registry.raise_threshold(session_id, raise_limit_by)
+            return JSONResponse(content={
+                "code": 200,
+                "message": f"已通过，上限已提升 {raise_limit_by}",
+                "new_threshold_raise": approval_registry.get_threshold_raise(session_id),
+            })
     return JSONResponse(content={"code": 200, "message": "已通过" if approved else "已拒绝"})
 
 
@@ -733,6 +662,8 @@ async def create_model(req: CreateModelRequest):
             max_iterations=req.max_iterations,
             think=req.think,
             reasoning_effort=req.reasoning_effort,
+            approval_timeout=req.approval_timeout,
+            approval_timeout_auto_approve=req.approval_timeout_auto_approve,
         )
         return JSONResponse(content={"code": 200, "message": "创建成功", "data": ModelConfigDTO(**result).model_dump()})
     except Exception as e:
@@ -760,6 +691,8 @@ async def update_model(model_id: str, req: UpdateModelRequest):
             max_iterations=req.max_iterations,
             think=req.think,
             reasoning_effort=req.reasoning_effort,
+            approval_timeout=req.approval_timeout,
+            approval_timeout_auto_approve=req.approval_timeout_auto_approve,
         )
         if not result:
             return JSONResponse(content={"code": 404, "message": "模型配置不存在"}, status_code=404)

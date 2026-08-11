@@ -2,11 +2,9 @@
 
 import asyncio
 import json
-from dataclasses import dataclass
 from datetime import datetime
 from typing import AsyncGenerator, Optional
 
-from openai import AsyncOpenAI
 from openai import (
     APIError,
     APIConnectionError,
@@ -48,15 +46,6 @@ def translate_openai_error(e: Exception) -> str:
     return str(e)
 
 
-@dataclass
-class AgentResult:
-    """Agent 运行结果"""
-    content: str  # 最终回复内容
-    messages: list  # 完整的消息列表（含中间步骤）
-    iterations: int = 0  # 实际迭代次数
-    tool_calls_count: int = 0  # 工具调用次数
-
-
 # ========== 消息格式转换 ==========
 
 def _to_openai_messages(messages: list[dict]) -> list[dict]:
@@ -87,28 +76,6 @@ def _to_openai_messages(messages: list[dict]) -> list[dict]:
         else:
             result.append(msg)
     return result
-
-
-def _from_openai_tool_calls(openai_tool_calls: list) -> list[dict]:
-    """将 OpenAI 非流式响应的 tool_calls 转为内部格式"""
-    result = []
-    for tc in openai_tool_calls or []:
-        func = tc.get("function", {})
-        try:
-            args = json.loads(func.get("arguments", "{}"))
-        except json.JSONDecodeError:
-            args = {}
-        result.append({
-            "id": tc.get("id", ""),
-            "name": func.get("name", ""),
-            "args": args,
-        })
-    return result
-
-
-def _create_client(base_url: str, api_key: str) -> AsyncOpenAI:
-    """创建 AsyncOpenAI 客户端"""
-    return AsyncOpenAI(base_url=base_url, api_key=api_key)
 
 
 def _build_request_kwargs(model_config: dict) -> dict:
@@ -470,65 +437,10 @@ def _build_messages(
 
 # ========== Agent 入口 ==========
 
-async def run_agent(
-    query: str,
-    history: Optional[list] = None,
-    system_prompt: Optional[str] = None,
-    tools: Optional[list] = None,
-    model_id: str = "",
-) -> AgentResult:
-    """运行 ReAct Agent 循环（非流式）
-
-    Args:
-        query: 用户输入
-        history: 历史消息列表（由调用者从持久化存储加载）
-        system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
-        tools: 工具列表，不传则使用所有注册工具
-        model_id: 模型配置 ID（必传）
-
-    Returns:
-        AgentResult
-
-    Raises:
-        ValueError: model_id 为空或模型不存在
-    """
-    if not model_id:
-        raise ValueError("未指定模型，请先在模型管理中添加并选择模型")
-
-    from src.agent.model_manager import model_manager
-
-    tools = tools or registry.get_all_schemas()
-    memory_block = _get_memory_block(query)
-    prompt = _build_system_prompt(system_prompt, memory_block=memory_block)
-
-    messages = _build_messages(prompt, history, query)
-    client, model_config = await model_manager.resolve_model(model_id)
-
-    try:
-        iterations, total_tool_calls = await _execute_loop(client, model_config, messages, tools)
-    except Exception as e:
-        raise ValueError(translate_openai_error(e)) from e
-
-    # 取最后一条 assistant 消息作为最终回复
-    final_content = ""
-    for msg in reversed(messages):
-        if msg["role"] == "assistant" and msg.get("content"):
-            final_content = msg["content"]
-            break
-
-    return AgentResult(
-        content=final_content,
-        messages=messages,
-        iterations=iterations,
-        tool_calls_count=total_tool_calls,
-    )
-
-
 async def run_agent_stream(
     cancel_event: asyncio.Event,
     context_messages: list[dict],
     display_messages: list[dict],
-    system_prompt: Optional[str] = None,
     tools: Optional[list] = None,
     session_id: str = "",
     model_id: str = "",
@@ -550,8 +462,7 @@ async def run_agent_stream(
     Args:
         cancel_event: 取消信号事件
         context_messages: API 上下文消息列表（必传，调用者已构建完整）
-        messages: 展示消息列表（必传，调用者已构建完整，仅用于持久化和前端展示）
-        system_prompt: 自定义 system prompt，不传则使用默认 + 技能目录
+        display_messages: 展示消息列表（必传，调用者已构建完整，仅用于持久化和前端展示）
         tools: 工具列表，不传则使用所有注册工具
         session_id: 会话 ID，用于审批等待的中断
         model_id: 模型配置 ID（必传）
@@ -567,19 +478,26 @@ async def run_agent_stream(
         raise ValueError("未指定模型，请先在模型管理中添加并选择模型")
 
     from src.agent.model_manager import model_manager
+    from src.tools.approval import approval_registry
 
     tools = tools or registry.get_all_schemas()
     client, model_config = await model_manager.resolve_model(model_id)
 
     # 从模型配置统一提取运行时参数
     max_iterations = model_config.get("max_iterations", 30)
+    approval_timeout = model_config.get("approval_timeout")  # None 或 0 表示无限等待
+    approval_timeout_auto_approve = model_config.get("approval_timeout_auto_approve", False)
+    # 将 None 或 0 转为 None（无限等待），否则转为 float
+    approval_wait_timeout = None if (approval_timeout is None or approval_timeout == 0) else float(approval_timeout)
 
     try:
         tool_calls_this_turn = 0
         context_tokens = last_context_tokens  # 从持久化恢复的基线
         compression_happened = False
+        effective_max_iterations = max_iterations + approval_registry.get_iteration_raise(session_id)
+        iteration = 1
 
-        for iteration in range(1, max_iterations + 1):
+        while iteration <= effective_max_iterations:
 
             # 检查点1：每轮迭代开始前检查取消信号
             if cancel_event.is_set():
@@ -593,7 +511,7 @@ async def run_agent_stream(
                 }
                 return
 
-            logger.info(f"[Agent] 迭代 {iteration}/{max_iterations}")
+            logger.info(f"[Agent] 迭代 {iteration}/{effective_max_iterations}")
 
             # 压缩时机检查：在 API 调用前检查上下文是否超过阈值
             if context_tokens > 0:
@@ -729,7 +647,7 @@ async def run_agent_stream(
                 yield {
                     "type": "done",
                     "content": full_content,
-                    "display_messages": messages,
+                    "display_messages": display_messages,
                     "context_messages": context_messages,
                     "context_tokens": context_tokens,
                     "compression_happened": compression_happened,
@@ -738,7 +656,6 @@ async def run_agent_stream(
 
             # 执行工具调用（并行，边完成边 yield）
             # 每轮计算有效阈值 = 基础值 + 用户临时提升量
-            from src.tools.approval import approval_registry
             base_max = model_config.get("max_tool_calls")
             effective_max = (base_max + approval_registry.get_threshold_raise(session_id)) if (base_max and base_max > 0) else None
 
@@ -746,6 +663,8 @@ async def run_agent_stream(
                 tool_calls, session_id, cancel_event,
                 tool_calls_so_far=tool_calls_this_turn,
                 max_tool_calls_threshold=effective_max,
+                approval_timeout_auto_approve=approval_timeout_auto_approve,
+                approval_wait_timeout=approval_wait_timeout,
             ):
                 if event["type"] == "_tool_results_done":
                     # 全部执行完成，按原始顺序追加 tool 消息到两个列表
@@ -761,102 +680,77 @@ async def run_agent_stream(
                     continue
                 yield event
 
-        # 达到最大迭代次数
-        # TODO 还需考虑上下文满了的情况
-        summary = f"已达到最大迭代次数 {max_iterations}，请基于已有信息给出总结。"
-        display_messages.append({"role": "user", "content": summary})  # TODO 角色为user合适吗？
-        context_messages.append({"role": "user", "content": summary})
-        openai_msgs = _to_openai_messages(context_messages)
-        response = await client.chat.completions.create(
-            messages=openai_msgs,
-            tools=tools,  # TODO 是否不应该传工具
-            **_build_request_kwargs(model_config),
-        )
-        choice = response.choices[0].message
-        final_content = choice.content or ""
-        display_messages.append({"role": "assistant", "content": final_content})
-        context_messages.append({"role": "assistant", "content": final_content})
+            iteration += 1
+
+            # 迭代阈值检查：下一轮是否超过有效上限
+            if iteration > effective_max_iterations:
+                iter_event_id = f"__iter__{session_id}_{iteration}"
+                approval_event = approval_registry.create(session_id, iter_event_id)
+                yield {
+                    "type": "threshold_iteration",
+                    "current_iterations": iteration - 1,
+                    "max_iterations": effective_max_iterations,
+                    "tool_call_id": iter_event_id,
+                }
+                # 等待审批决策
+                wait_tasks = [
+                    asyncio.create_task(approval_event.wait()),
+                    asyncio.create_task(cancel_event.wait()),
+                ]
+                _, pending = await asyncio.wait(
+                    wait_tasks, timeout=approval_wait_timeout, return_when=asyncio.FIRST_COMPLETED
+                )
+                for t in pending:
+                    t.cancel()
+
+                if cancel_event.is_set():
+                    approval_registry.clear(session_id, iter_event_id)
+                    yield {
+                        "type": "cancelled",
+                        "content": "",
+                        "display_messages": display_messages,
+                        "context_messages": context_messages,
+                        "context_tokens": context_tokens,
+                        "compression_happened": compression_happened,
+                    }
+                    return
+
+                approved = approval_registry.get_decision(session_id, iter_event_id)
+                if approved is None:
+                    # 超时 → 按配置决定
+                    approval_registry.clear(session_id, iter_event_id)
+                    if approval_timeout_auto_approve:
+                        effective_max_iterations = iteration  # 允许再执行一轮
+                        continue
+                    else:
+                        break  # 默认拒绝 → 结束
+                elif approved is False:
+                    # 用户拒绝 → 走总结逻辑
+                    approval_registry.clear(session_id, iter_event_id)
+                    break
+                else:
+                    # 用户通过 → 重新计算有效上限，继续循环
+                    approval_registry.clear(session_id, iter_event_id)
+                    effective_max_iterations = max(
+                        iteration,
+                        max_iterations + approval_registry.get_iteration_raise(session_id),
+                    )
+                    continue
+
+        # 达到最大迭代次数，直接结束
         yield {
             "type": "done",
-            "content": final_content,
+            "content": "",
             "display_messages": display_messages,
             "context_messages": context_messages,
             "context_tokens": context_tokens,
             "compression_happened": compression_happened,
+            "stop_reason": "max_iterations",
         }
 
     except Exception as e:
         logger.error(f"[Agent] 流式执行出错: {e}", exc_info=True)
         yield {"type": "error", "message": translate_openai_error(e)}
-
-
-async def _execute_loop(
-    client: AsyncOpenAI, model_config: dict, messages: list[dict], tools: list,
-) -> tuple[int, int]:
-    """非流式版本的 ReAct 循环执行体
-
-    Returns:
-        (iterations, total_tool_calls)
-    """
-    iterations = 0
-    total_tool_calls = 0
-    max_iterations = model_config.get("max_iterations", 30)
-
-    while iterations < max_iterations:
-        iterations += 1
-
-        logger.info(f"[Agent] 迭代 {iterations}/{max_iterations}")
-
-        openai_msgs = _to_openai_messages(messages)
-        response = await client.chat.completions.create(
-            messages=openai_msgs,
-            tools=tools,
-            **_build_request_kwargs(model_config),
-        )
-        choice = response.choices[0].message
-
-        msg = {
-            "role": "assistant",
-            "content": choice.content or "",
-            "tool_calls": _from_openai_tool_calls(choice.tool_calls),
-        }
-        messages.append(msg)
-
-        if not msg["tool_calls"]:
-            logger.info(f"[Agent] 模型完成输出，共 {iterations} 次迭代，{total_tool_calls} 次工具调用")
-            return iterations, total_tool_calls
-
-        for tc in msg["tool_calls"]:
-            total_tool_calls += 1
-            tool_name = tc["name"]
-            tool_args = tc["args"]
-            tool_call_id = tc["id"]
-
-            logger.info(f"[Agent] 调用工具: {tool_name}({tool_args})")
-
-            observation = await registry.dispatch(tool_name, tool_args)
-
-            logger.info(f"[Agent] 工具返回: {str(observation)[:200]}{'...' if len(str(observation)) > 200 else ''}")
-
-            messages.append({
-                "role": "tool",
-                "content": str(observation),
-                "tool_call_id": tool_call_id,
-            })
-
-    # 达到最大迭代次数
-    summary = f"已达到最大迭代次数 {max_iterations}，请基于已有信息给出总结。"
-    messages.append({"role": "user", "content": summary})
-    openai_msgs = _to_openai_messages(messages)
-    response = await client.chat.completions.create(
-        messages=openai_msgs,
-        tools=tools,
-        **_build_request_kwargs(model_config),
-    )
-    choice = response.choices[0].message
-    messages.append({"role": "assistant", "content": choice.content or ""})
-
-    return iterations, total_tool_calls
 
 
 async def _execute_tool_calls_parallel(
@@ -865,6 +759,8 @@ async def _execute_tool_calls_parallel(
     cancel_event: asyncio.Event,
     tool_calls_so_far: int = 0,
     max_tool_calls_threshold: Optional[int] = None,
+    approval_timeout_auto_approve: bool = False,
+    approval_wait_timeout: Optional[float] = None,
 ) -> AsyncGenerator[dict, None]:
     """并行执行工具调用，先 yield 全部 tool_call，再按完成顺序逐个 yield tool_result"""
     from src.tools.approval import approval_registry
@@ -933,7 +829,7 @@ async def _execute_tool_calls_parallel(
                 asyncio.create_task(cancel_event.wait()),
             ]
             _, pending = await asyncio.wait(
-                wait_tasks, timeout=120, return_when=asyncio.FIRST_COMPLETED
+                wait_tasks, timeout=approval_wait_timeout, return_when=asyncio.FIRST_COMPLETED
             )
             for t in pending:
                 t.cancel()
@@ -947,7 +843,10 @@ async def _execute_tool_calls_parallel(
 
 
             if approved is None:
-                return index, tc, "用户长时间未审批，工具调用已超时"
+                if approval_timeout_auto_approve:
+                    pass  # 超时默认通过 → 继续执行工具
+                else:
+                    return index, tc, "用户长时间未审批，工具调用已超时"
             elif approved is False:
                 return index, tc, "用户拒绝了该工具的执行"
 

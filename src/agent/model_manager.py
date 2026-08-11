@@ -53,6 +53,7 @@ class ModelManager:
                 "SELECT id, name, base_url, model, env_var_name, is_active, "
                 "max_context_tokens, max_output_tokens, max_tool_calls, "
                 "temperature, max_iterations, think, reasoning_effort, "
+                "approval_timeout, approval_timeout_auto_approve, "
                 "created_at, updated_at "
                 "FROM model_configs ORDER BY created_at DESC"
             )
@@ -66,6 +67,7 @@ class ModelManager:
                 "SELECT id, name, base_url, model, env_var_name, is_active, "
                 "max_context_tokens, max_output_tokens, max_tool_calls, "
                 "temperature, max_iterations, think, reasoning_effort, "
+                "approval_timeout, approval_timeout_auto_approve, "
                 "created_at, updated_at "
                 "FROM model_configs WHERE id = ?", (model_id,)
             )
@@ -76,7 +78,9 @@ class ModelManager:
                            max_context_tokens: int = 200000, max_output_tokens: int = 64000,
                            max_tool_calls: int = 50,
                            temperature: float = 0.7, max_iterations: int = 30,
-                           think: bool = True, reasoning_effort: Optional[str] = None) -> dict:
+                           think: bool = True, reasoning_effort: Optional[str] = None,
+                           approval_timeout: Optional[int] = 120,
+                           approval_timeout_auto_approve: bool = False) -> dict:
         """创建新模型配置"""
         model_id = str(uuid.uuid4())
         env_var_name = f"{ENV_KEY_PREFIX}{_sanitize_name(name)}"
@@ -88,11 +92,13 @@ class ModelManager:
             await conn.execute(
                 "INSERT INTO model_configs (id, name, base_url, model, env_var_name, "
                 "max_context_tokens, max_output_tokens, max_tool_calls, "
-                "temperature, max_iterations, think, reasoning_effort) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "temperature, max_iterations, think, reasoning_effort, "
+                "approval_timeout, approval_timeout_auto_approve) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (model_id, name, base_url, model, env_var_name,
                  max_context_tokens, max_output_tokens, max_tool_calls,
-                 temperature, max_iterations, int(think), reasoning_effort),
+                 temperature, max_iterations, int(think), reasoning_effort,
+                 approval_timeout, int(approval_timeout_auto_approve)),
             )
 
         logger.info(f"模型配置已创建: {name} (id={model_id})")
@@ -107,7 +113,9 @@ class ModelManager:
                            temperature: Optional[float] = None,
                            max_iterations: Optional[int] = None,
                            think: Optional[bool] = None,
-                           reasoning_effort: Optional[str] = None) -> Optional[dict]:
+                           reasoning_effort: Optional[str] = None,
+                           approval_timeout: Optional[int] = None,
+                           approval_timeout_auto_approve: Optional[bool] = None) -> Optional[dict]:
         """更新模型配置"""
         existing = await self.get_model(model_id)
         if not existing:
@@ -154,6 +162,13 @@ class ModelManager:
         if reasoning_effort is not None:
             set_clauses.append("reasoning_effort=?")
             params.append(reasoning_effort)
+        if approval_timeout is not None:
+            set_clauses.append("approval_timeout=?")
+            params.append(approval_timeout)
+        if approval_timeout_auto_approve is not None:
+            set_clauses.append("approval_timeout_auto_approve=?")
+            params.append(int(approval_timeout_auto_approve))
+        # TODO 有没有其他做法？
 
         params.append(model_id)
 
