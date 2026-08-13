@@ -810,7 +810,7 @@ async def _execute_tool_calls_parallel(
         tool_args = tc["args"]
         tool_call_id = tc["id"]
         if tool_name == "delegate_task" and model_id:
-            tool_args = {**tool_args, "_model_id": model_id}
+            tool_args = {**tool_args, "_model_id": model_id, "_cancel_event": cancel_event}
 
         if not needs_approval:
             # 非审批工具：直接执行
@@ -840,7 +840,7 @@ async def _execute_tool_calls_parallel(
 
             if cancel_event.is_set():
                 approval_registry.clear(session_id, tool_call_id)
-                return index, tc, "工具调用被用户中断"
+                return index, tc, "用户中断了对话"
 
             approved = approval_registry.get_decision(session_id, tool_call_id)
             approval_registry.clear(session_id, tool_call_id)
@@ -892,7 +892,7 @@ async def _execute_tool_calls_parallel(
     # 为被取消而未能完成的工具补充结果
     for i, tc in enumerate(tool_calls):
         if i not in results:
-            results[i] = "工具调用被用户中断"
+            results[i] = "用户中断了对话"
             yield {"type": "tool_result", "name": tc["name"], "result": results[i]}
 
     # 按原始顺序返回 results（供调用者构造 messages）

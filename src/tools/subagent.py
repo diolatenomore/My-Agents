@@ -4,6 +4,7 @@
 仅返回最终 summary 给父 Agent。子 Agent 工具集 = 全量工具 - 屏蔽集。
 """
 
+import asyncio
 import json
 from typing import Optional
 
@@ -50,6 +51,7 @@ async def run_subagent(
     model_id: str,
     prompt: str,
     tools: list,
+    cancel_event: Optional[asyncio.Event] = None,
 ) -> str:
     """运行一个隔离上下文的子 Agent，返回最终 summary 文本"""
     client, model_config = await model_manager.resolve_model(model_id)
@@ -60,50 +62,82 @@ async def run_subagent(
     ]
 
     last_content = ""
-    for _ in range(max_iterations):
-        response = await client.chat.completions.create(
-            messages=_to_openai_messages(messages),
-            tools=tools,
-            **_build_request_kwargs(model_config),
-        )
-        message = response.choices[0].message
-        content = message.content or ""
-        last_content = content
+    try:
+        for _ in range(max_iterations):
+            # 迭代间隙检查：主 Agent 是否已取消
+            if cancel_event and cancel_event.is_set():
+                return "用户中断了对话"
 
-        if not message.tool_calls:
-            return content
+            response = await client.chat.completions.create(
+                messages=_to_openai_messages(messages),
+                tools=tools,
+                **_build_request_kwargs(model_config),
+            )
+            message = response.choices[0].message
+            content = message.content or ""
+            last_content = content
 
-        tool_calls = []
-        for tc in message.tool_calls:
-            try:
-                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
-            except json.JSONDecodeError:
-                args = {}
-            tool_calls.append({"id": tc.id, "name": tc.function.name, "args": args})
+            if not message.tool_calls:
+                return content
 
-        assistant_msg = {"role": "assistant", "content": content}
-        if tool_calls:
-            assistant_msg["tool_calls"] = tool_calls
-        messages.append(assistant_msg)
+            tool_calls = []
+            for tc in message.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+                except json.JSONDecodeError:
+                    args = {}
+                tool_calls.append({"id": tc.id, "name": tc.function.name, "args": args})
 
-        # 顺序执行工具（内部默认通过，无需审批）
-        for tc in tool_calls:
-            try:
-                result_str = str(await registry.dispatch(tc["name"], tc["args"]))
-            except Exception as e:
-                result_str = f"工具执行失败: {e}"
-                logger.error(f"[SubAgent] 工具 '{tc['name']}' 执行失败: {e}")
-            messages.append({
-                "role": "tool",
-                "content": result_str,
-                "tool_call_id": tc["id"],
-            })
+            assistant_msg = {"role": "assistant", "content": content}
+            if tool_calls:
+                assistant_msg["tool_calls"] = tool_calls
+            messages.append(assistant_msg)
 
-    logger.warning("[SubAgent] 达到迭代上限，强制结束")
-    return last_content or "(子智能体达到迭代上限)"
+            # 顺序执行工具（内部默认通过，无需审批）
+            for tc in tool_calls:
+                # 每个工具执行前检查取消信号
+                if cancel_event and cancel_event.is_set():
+                    return "用户中断了对话"
+
+                try:
+                    result_str = str(await registry.dispatch(tc["name"], tc["args"]))
+                except Exception as e:
+                    result_str = f"工具执行失败: {e}"
+                    logger.error(f"[SubAgent] 工具 '{tc['name']}' 执行失败: {e}")
+                messages.append({
+                    "role": "tool",
+                    "content": result_str,
+                    "tool_call_id": tc["id"],
+                })
+
+        # 达到迭代上限：追加总结 prompt，不带工具让 LLM 基于历史对话总结
+        logger.warning("[SubAgent] 达到迭代上限，请求 LLM 总结")
+        messages.append({
+            "role": "user",
+            "content": "你已达到工具调用上限，请基于以上对话历史，直接给出最后的总结",
+        })
+        try:
+            response = await client.chat.completions.create(
+                messages=_to_openai_messages(messages),
+                **_build_request_kwargs(model_config),
+            )
+            summary = response.choices[0].message.content or ""
+            return summary or "子智能体达到迭代上限，最后的输出为：\n" + last_content
+        except Exception as e:
+            logger.error(f"[SubAgent] 总结请求失败: {e}")
+            return summary or "子智能体达到迭代上限，最后的输出为：\n" + last_content
+
+    except asyncio.CancelledError:
+        logger.info("[SubAgent] Task 被外部取消")
+        return "用户中断了对话"
 
 
-async def _delegate_subagent(goal: str, context: str = "", _model_id: str = "") -> str:
+async def _delegate_subagent(
+    goal: str,
+    context: str = "",
+    _model_id: str = "",
+    _cancel_event: Optional[asyncio.Event] = None,
+) -> str:
     if not _model_id:
         return "错误：无法获取当前模型配置，无法启动子智能体"
 
@@ -116,6 +150,7 @@ async def _delegate_subagent(goal: str, context: str = "", _model_id: str = "") 
             model_id=_model_id,
             prompt=_build_child_prompt(goal, context),
             tools=tools,
+            cancel_event=_cancel_event,
         )
     except Exception as e:
         return f"子智能体执行出错: {e}"
