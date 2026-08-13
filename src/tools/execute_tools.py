@@ -4,10 +4,11 @@
 每个工具在模块导入时通过 registry.register() 自注册。
 """
 
+import asyncio
 import os
-import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -36,7 +37,9 @@ class ExecuteInput(BaseModel):
     )
     timeout: int = Field(
         default=60,
-        description="命令超时秒数，默认 60 秒",
+        description=(
+            "命令超时秒数。请根据任务类型估算，上限为600秒。"
+        ),
     )
 
 
@@ -50,7 +53,35 @@ def _resolve_cwd(cwd: str) -> str:
     return resolved
 
 
-def execute(command: str, cwd: str = ".", timeout: int = 60) -> str:
+def _format_output(stdout: bytes, stderr: bytes) -> str:
+    """将 stdout/stderr 格式化为字符串，超长时保留头尾"""
+    output = ""
+    if stdout:
+        output += stdout.decode() if isinstance(stdout, bytes) else stdout
+    if stderr:
+        stderr_text = stderr.decode() if isinstance(stderr, bytes) else stderr
+        if output:
+            output += "\n--- stderr ---\n"
+        output += stderr_text
+
+    if not output:
+        return ""
+
+    _HEAD_KEEP = 2000
+    _TAIL_KEEP = 3000
+    _MAX_KEEP = _HEAD_KEEP + _TAIL_KEEP
+    if len(output) > _MAX_KEEP:
+        skipped = len(output) - _MAX_KEEP
+        output = output[:_HEAD_KEEP] + f"\n...(中间省略 {skipped} 字符)...\n" + output[-_TAIL_KEEP:]
+    return output
+
+
+async def execute(
+    command: str,
+    cwd: str = ".",
+    timeout: int = 60,
+    _cancel_event: Optional[asyncio.Event] = None,
+) -> str:
     """执行 shell 命令并返回 stdout + stderr
 
     用于运行 skill 附带的脚本（Python、Shell、Node.js 等），
@@ -62,7 +93,8 @@ def execute(command: str, cwd: str = ".", timeout: int = 60) -> str:
     Args:
         command: shell 命令
         cwd: 工作目录
-        timeout: 超时秒数
+        timeout: 超时秒数，会被硬限制在 600 秒以内
+        _cancel_event: 取消事件，由主循环注入，单工具场景下用于中断长时间命令
 
     Returns:
         命令的 stdout + stderr 输出（超长截断到 5000 字符）
@@ -72,37 +104,60 @@ def execute(command: str, cwd: str = ".", timeout: int = 60) -> str:
     )
     # cwd 的相对路径始终相对于项目根目录解析，不依赖进程的当前工作目录。
     cwd = _resolve_cwd(cwd)
+    timeout = max(timeout, 5)
+    timeout = min(timeout, 600)  # 硬上限 600 秒，防止 LLM 传离谱值
     try:
-        result = subprocess.run(
+        proc = await asyncio.create_subprocess_shell(
             command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
-            env={**os.environ},
         )
+        try:
+            # 三路竞速：进程完成 / 超时 / 用户取消
+            communicate_task = asyncio.create_task(proc.communicate())
+            wait_tasks = [communicate_task]
+            if _cancel_event:
+                cancel_task = asyncio.create_task(_cancel_event.wait())
+                wait_tasks.append(cancel_task)
 
-        output = ""
-        if result.stdout:
-            output += result.stdout
-        if result.stderr:
-            if output:
-                output += "\n--- stderr ---\n"
-            output += result.stderr
+            done, pending = await asyncio.wait(
+                wait_tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+            for t in pending:
+                t.cancel()
 
-        if not output:
-            output = "(命令执行完毕，无输出)"
+            if communicate_task in done:
+                stdout, stderr = communicate_task.result()
+            elif not done:
+                # 超时：先 kill 再 communicate 拿缓冲中的输出
+                proc.kill()
+                stdout, stderr = await proc.communicate()
+                partial = _format_output(stdout, stderr)
+                if partial:
+                    return f"命令超时 ({timeout}s): {command[:100]}\n\n--- 超时前输出 ---\n{partial}"
+                return f"命令超时 ({timeout}s): {command[:100]}"
+            else:
+                # cancel_event 被触发
+                proc.kill()
+                stdout, stderr = await proc.communicate()
+                partial = _format_output(stdout, stderr)
+                if partial:
+                    return f"命令被用户中断\n\n--- 中断前输出 ---\n{partial}"
+                return "命令被用户中断"
 
-        # 截断超长输出
-        max_len = 5000
-        if len(output) > max_len:
-            output = output[:max_len] + f"\n...(截断，原长度 {len(output)} 字符)"
+        except asyncio.CancelledError:
+            # 多工具场景：被 task.cancel() 取消
+            proc.kill()
+            stdout, stderr = await proc.communicate()
+            partial = _format_output(stdout, stderr)
+            if partial:
+                return f"命令被用户中断\n\n--- 中断前输出 ---\n{partial}"
+            return "命令被用户中断"
 
-        return output
+        output = _format_output(stdout, stderr)
+        return output or "(命令执行完毕，无输出)"
 
-    except subprocess.TimeoutExpired:
-        return f"命令超时 ({timeout}s): {command[:100]}"
     except Exception as e:
         return f"命令执行失败: {e}"
 

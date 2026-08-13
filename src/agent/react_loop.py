@@ -811,6 +811,8 @@ async def _execute_tool_calls_parallel(
         tool_call_id = tc["id"]
         if tool_name == "delegate_task" and model_id:
             tool_args = {**tool_args, "_model_id": model_id, "_cancel_event": cancel_event}
+        elif tool_name == "execute":
+            tool_args = {**tool_args, "_cancel_event": cancel_event}
 
         if not needs_approval:
             # 非审批工具：直接执行
