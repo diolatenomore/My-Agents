@@ -665,6 +665,7 @@ async def run_agent_stream(
                 max_tool_calls_threshold=effective_max,
                 approval_timeout_auto_approve=approval_timeout_auto_approve,
                 approval_wait_timeout=approval_wait_timeout,
+                model_id=model_id,
             ):
                 if event["type"] == "_tool_results_done":
                     # 全部执行完成，按原始顺序追加 tool 消息到两个列表
@@ -761,6 +762,7 @@ async def _execute_tool_calls_parallel(
     max_tool_calls_threshold: Optional[int] = None,
     approval_timeout_auto_approve: bool = False,
     approval_wait_timeout: Optional[float] = None,
+    model_id: str = "",
 ) -> AsyncGenerator[dict, None]:
     """并行执行工具调用，先 yield 全部 tool_call，再按完成顺序逐个 yield tool_result"""
     from src.tools.approval import approval_registry
@@ -807,6 +809,8 @@ async def _execute_tool_calls_parallel(
         tool_name = tc["name"]
         tool_args = tc["args"]
         tool_call_id = tc["id"]
+        if tool_name == "delegate_task" and model_id:
+            tool_args = {**tool_args, "_model_id": model_id}
 
         if not needs_approval:
             # 非审批工具：直接执行
@@ -840,7 +844,6 @@ async def _execute_tool_calls_parallel(
 
             approved = approval_registry.get_decision(session_id, tool_call_id)
             approval_registry.clear(session_id, tool_call_id)
-
 
             if approved is None:
                 if approval_timeout_auto_approve:
