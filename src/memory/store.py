@@ -1,7 +1,8 @@
 """ChromaDB 封装 — 记忆的向量存储与检索"""
 
+import math
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import chromadb
 from chromadb.utils import embedding_functions
@@ -73,7 +74,11 @@ class MemoryStore:
 
     def query(self, text: str, n_results: int = 5,
               memory_type: str = "semantic") -> list[dict]:
-        """语义搜索相关记忆。
+        """语义搜索相关记忆，加入时间衰减重新排序。
+
+        先查询 n_results * 2 条候选，再用时间衰减因子调整分数：
+            final_score = similarity × e^(-λ × days)
+        最后取 top n_results 返回。
 
         Args:
             text: 搜索文本（通常是用户 query）
@@ -81,14 +86,24 @@ class MemoryStore:
             memory_type: 类型过滤，semantic / preference / all
 
         Returns:
-            [{"id": ..., "value": ..., "memory_type": ..., "key": ..., "distance": ...}, ...]
+            [{"id": ..., "value": ..., "memory_type": ..., "key": ..., "distance": ...,
+              "final_score": ..., "days_ago": ...}, ...]
         """
         if not text or not text.strip():
             return []
 
+        from src.config import MEMORY_DECAY_LAMBDA
+
+        total = self.collection.count()
+        if total == 0:
+            return []
+
+        # 多取一些候选，给时间衰减留足排序空间
+        fetch_count = min(n_results * 2, total)
+
         kwargs: dict = {
             "query_texts": [text],
-            "n_results": min(n_results, self.collection.count()),
+            "n_results": fetch_count,
             "include": ["documents", "metadatas", "distances"],
         }
         if memory_type != "all":
@@ -103,16 +118,41 @@ class MemoryStore:
         if not results["ids"] or not results["ids"][0]:
             return []
 
-        output = []
+        now = datetime.now(timezone.utc)
+        scored: list[dict] = []
+
         for i, doc_id in enumerate(results["ids"][0]):
-            output.append({
+            meta = results["metadatas"][0][i]
+            distance = results["distances"][0][i] if results["distances"] else 0.0
+            similarity = 1.0 - distance  # 余弦距离转相似度
+
+            # 计算时间衰减
+            days_ago = 0.0
+            final_score = similarity
+            if MEMORY_DECAY_LAMBDA > 0:
+                created_str = meta.get("created_at", "")
+                if created_str:
+                    try:
+                        created = datetime.fromisoformat(created_str)
+                        days_ago = (now - created).total_seconds() / 86400.0
+                        decay = math.exp(-MEMORY_DECAY_LAMBDA * days_ago)
+                        final_score = similarity * decay
+                    except (ValueError, TypeError):
+                        pass
+
+            scored.append({
                 "id": doc_id,
                 "value": results["documents"][0][i],
-                "memory_type": results["metadatas"][0][i].get("memory_type", ""),
-                "key": results["metadatas"][0][i].get("key", ""),
-                "distance": results["distances"][0][i] if results["distances"] else None,
+                "memory_type": meta.get("memory_type", ""),
+                "key": meta.get("key", ""),
+                "distance": distance,
+                "final_score": round(final_score, 4),
+                "days_ago": round(days_ago, 1),
             })
-        return output
+
+        # 按 final_score 降序，取前 n_results
+        scored.sort(key=lambda x: x["final_score"], reverse=True)
+        return scored[:n_results]
 
     def get_preferences(self) -> list[dict]:
         """获取全部 preference 类型记忆"""

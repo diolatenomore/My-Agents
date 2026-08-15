@@ -40,6 +40,9 @@ MEMORY_MAX_RESULTS = 5
 # 记忆写入前的语义去重阈值（余弦距离，越小越相似）
 # 新记忆与已有同类型记忆的余弦距离 <= 此阈值时，跳过写入
 MEMORY_DEDUP_THRESHOLD = 0.2
+# 记忆检索时间衰减系数 λ（指数衰减 e^(-λ × days)）
+# λ 越大衰减越快，0 表示不衰减。建议值 0.01 ~ 0.1
+MEMORY_DECAY_LAMBDA = 0.05
 
 # 上下文压缩配置
 COMPACTION_TAIL_TOKEN_RATIO = 0.20   # 尾部 token 预算占可用窗口的比例
