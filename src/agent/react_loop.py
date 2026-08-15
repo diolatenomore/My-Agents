@@ -23,6 +23,7 @@ from src.config import (
 )
 from src.skills.loader import build_skills_catalog
 from src.tools.registry import registry
+from src.tools.todo_tools import TodoStore
 from src.utils.common import logger
 
 
@@ -421,6 +422,38 @@ async def _compress(
     return True
 
 
+# ========== TODO Hydration ==========
+
+def _hydrate_todo_store(todo_store: TodoStore, context_messages: list[dict]):
+    """从对话历史中恢复 TODO 状态
+
+    从后往前扫描 context_messages，找到最近一次 todo 工具的 tool 返回消息，
+    验证其对应一个 assistant 的 todo 调用后，解析 JSON 重建 TodoStore。
+    """
+    import json
+
+    # 只往前找最近 10 条消息
+    recent_messages = context_messages[-10:] if len(context_messages) > 10 else context_messages
+
+    # 从后往前找到最近一条 tool 消息（内容包含 "todos" 和 "summary"）
+    last_tool_msg = None
+    last_tool_call_id = None
+    for msg in reversed(recent_messages):
+        if msg.get("role") == "tool" and msg.get("tool_call_id"):
+            content = msg.get("content", "")
+            if '"todos"' in content and '"summary"' in content:
+                last_tool_msg = msg
+                last_tool_call_id = msg["tool_call_id"]
+                break
+
+    if not last_tool_msg:
+        return
+
+    # 解析 JSON 并恢复
+    if todo_store.restore_from_json(last_tool_msg["content"]):
+        logger.info(f"[Todo] 从对话历史恢复: {todo_store.read()['summary']}")
+
+
 # ========== 消息构建 ==========
 
 def _build_messages(
@@ -482,6 +515,12 @@ async def run_agent_stream(
 
     tools = tools or registry.get_all_schemas()
     client, model_config = await model_manager.resolve_model(model_id)
+
+    # 创建本会话的 TodoStore（子 Agent 不会创建，实现天然隔离）
+    todo_store = TodoStore()
+
+    # 从对话历史恢复 TODO 状态（hydration）
+    _hydrate_todo_store(todo_store, context_messages)
 
     # 从模型配置统一提取运行时参数
     max_iterations = model_config.get("max_iterations", 30)
@@ -666,6 +705,7 @@ async def run_agent_stream(
                 approval_timeout_auto_approve=approval_timeout_auto_approve,
                 approval_wait_timeout=approval_wait_timeout,
                 model_id=model_id,
+                todo_store=todo_store,
             ):
                 if event["type"] == "_tool_results_done":
                     # 全部执行完成，按原始顺序追加 tool 消息到两个列表
@@ -763,6 +803,7 @@ async def _execute_tool_calls_parallel(
     approval_timeout_auto_approve: bool = False,
     approval_wait_timeout: Optional[float] = None,
     model_id: str = "",
+    todo_store: Optional[TodoStore] = None,
 ) -> AsyncGenerator[dict, None]:
     """并行执行工具调用，先 yield 全部 tool_call，再按完成顺序逐个 yield tool_result"""
     from src.tools.approval import approval_registry
@@ -813,6 +854,8 @@ async def _execute_tool_calls_parallel(
             tool_args = {**tool_args, "_model_id": model_id, "_cancel_event": cancel_event}
         elif tool_name == "execute":
             tool_args = {**tool_args, "_cancel_event": cancel_event}
+        elif tool_name == "todo" and todo_store:
+            tool_args = {**tool_args, "_todo_store": todo_store}
 
         if not needs_approval:
             # 非审批工具：直接执行

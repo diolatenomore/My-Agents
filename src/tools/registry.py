@@ -19,20 +19,48 @@ class ToolEntry:
         self.requires_approval = requires_approval
 
 
+def _clean_prop(prop: dict, defs: dict) -> dict:
+    """递归清理单个属性，解析 $ref 和嵌套对象/数组"""
+    # 解析 $ref 引用
+    if "$ref" in prop:
+        ref_path = prop["$ref"]
+        ref_name = ref_path.split("/")[-1]
+        if ref_name in defs:
+            return _clean_prop(defs[ref_name], defs)
+
+    cleaned = {"type": prop.get("type", "string")}
+
+    if "description" in prop:
+        cleaned["description"] = prop["description"]
+    if "enum" in prop:
+        cleaned["enum"] = prop["enum"]
+
+    # 递归处理嵌套对象
+    if prop.get("type") == "object" and "properties" in prop:
+        cleaned["properties"] = {
+            k: _clean_prop(v, defs)
+            for k, v in prop["properties"].items()
+        }
+        if "required" in prop:
+            cleaned["required"] = prop["required"]
+
+    # 递归处理数组的 items
+    if prop.get("type") == "array" and "items" in prop:
+        cleaned["items"] = _clean_prop(prop["items"], defs)
+
+    return cleaned
+
+
 def _pydantic_to_openai_params(model: Type[BaseModel]) -> Dict[str, Any]:
     """将 Pydantic BaseModel 转换为 OpenAI Function Calling 的 parameters"""
     schema = model.model_json_schema()
     properties = schema.get("properties", {})
     required = schema.get("required", [])
+    defs = schema.get("$defs", {})
 
     cleaned_properties = {}
     for name, prop in properties.items():
-        cleaned = {"type": prop.get("type", "string")}
-        if "description" in prop:
-            cleaned["description"] = prop["description"]
-        if "enum" in prop:
-            cleaned["enum"] = prop["enum"]
-        cleaned_properties[name] = cleaned
+        cleaned_properties[name] = _clean_prop(prop, defs)
 
     return {
         "type": "object",
