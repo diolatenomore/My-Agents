@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.utils.common import logger
+from src.config import MAX_INJECT_SKILLS
 
 
 @dataclass
@@ -389,10 +390,6 @@ def build_skills_catalog(skills_dir: str = "skills") -> str:
     for meta in metas:
         lines.append(f"- **{meta.name}**: {meta.description}")
     return "\n".join(lines)
-
-
-# 显式注入的技能数量上限（每个 skill 为完整 SKILL.md，防止上下文爆炸）
-MAX_INJECT_SKILLS = 5
 
 
 def build_skill_injection(names: Optional[list]) -> Optional[str]:

@@ -50,3 +50,6 @@ COMPACTION_MIN_TAIL_COUNT = 5        # 尾部最少保留消息数
 COMPACTION_BUDGET_OVERFLOW = 1.5     # 单条消息可超出预算的倍数
 COMPACTION_HEAD_COUNT = 3            # 头部保护的非 system 消息数
 COMPACTION_TOOL_TRIM_THRESHOLD = 200 # Phase 1 工具输出裁剪字符阈值
+
+# 显式注入的技能数量上限（每个 skill 为完整 SKILL.md，防止上下文爆炸）
+MAX_INJECT_SKILLS = 3
