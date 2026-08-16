@@ -18,10 +18,10 @@ import Modal from '../common/Modal';
 import type { SessionDTO } from '../../types';
 
 const NAV_ITEMS = [
-  { to: '/', icon: MessagesSquare, label: '聊天', end: true },
   { to: '/memory', icon: Brain, label: '记忆' },
   { to: '/skills', icon: Sparkles, label: '技能' },
   { to: '/models', icon: Cpu, label: '模型' },
+  { to: '/', icon: MessagesSquare, label: '聊天', end: true },
 ];
 
 export default function Sidebar() {
@@ -80,6 +80,26 @@ export default function Sidebar() {
           新建会话
         </button>
       </div>
+
+      {/* 主导航 */}
+      <nav className="px-2 pb-1">
+        {NAV_ITEMS.map(({ to, icon: Icon, label, end }) => (
+          <NavLink
+            key={to}
+            to={to}
+            end={end}
+            className={({ isActive }) =>
+              cn(
+                'flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors',
+                isActive ? 'bg-indigo-50 text-indigo-700' : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800',
+              )
+            }
+          >
+            <Icon size={16} />
+            {label}
+          </NavLink>
+        ))}
+      </nav>
 
       {/* 搜索 */}
       <div className="px-3 pb-2">
@@ -155,26 +175,6 @@ export default function Sidebar() {
             );
           })
         )}
-      </nav>
-
-      {/* 底部导航 */}
-      <nav className="border-t border-zinc-100 p-2">
-        {NAV_ITEMS.map(({ to, icon: Icon, label, end }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={end}
-            className={({ isActive }) =>
-              cn(
-                'flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] font-medium transition-colors',
-                isActive ? 'bg-indigo-50 text-indigo-700' : 'text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800',
-              )
-            }
-          >
-            <Icon size={16} />
-            {label}
-          </NavLink>
-        ))}
       </nav>
 
       {/* 重命名弹窗 */}

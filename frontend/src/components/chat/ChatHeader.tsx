@@ -3,7 +3,6 @@ import { PanelRight, Settings2 } from 'lucide-react';
 import { useAppStore } from '../../stores/appStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useReviewStore } from '../../stores/reviewStore';
-import { useTodoStore } from '../../stores/todoStore';
 import { cn } from '../../utils/misc';
 import ModelSelect from './ModelSelect';
 import ContextUsageBar from './ContextUsageBar';
@@ -17,8 +16,6 @@ export default function ChatHeader() {
   const drawerOpen = useReviewStore(s => s.open);
   const hasReview = useReviewStore(s => s.tree !== null);
   const setOpen = useReviewStore(s => s.setOpen);
-  const setTab = useReviewStore(s => s.setTab);
-  const todoCount = useTodoStore(s => s.todos.length);
 
   const session = sessions.find(s => s.session_id === currentSessionId);
   const title = currentSessionId ? session?.title || '未命名会话' : '新会话';
@@ -47,20 +44,12 @@ export default function ChatHeader() {
         </button>
         <button
           className={cn('icon-btn relative', drawerOpen && 'bg-zinc-100 text-zinc-700')}
-          title="审批 / 任务面板"
-          onClick={() => {
-            if (!drawerOpen && !hasReview && todoCount > 0) setTab('todo');
-            setOpen(!drawerOpen);
-          }}
+          title="审批面板"
+          onClick={() => setOpen(!drawerOpen)}
         >
           <PanelRight size={16} />
-          {!drawerOpen && (hasReview || todoCount > 0) && (
-            <span
-              className={cn(
-                'absolute top-1 right-1 h-1.5 w-1.5 rounded-full',
-                hasReview ? 'bg-amber-500' : 'bg-indigo-500',
-              )}
-            />
+          {hasReview && !drawerOpen && (
+            <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-amber-500" />
           )}
         </button>
       </div>

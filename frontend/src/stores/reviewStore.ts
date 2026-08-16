@@ -4,15 +4,11 @@ import { getReviewTree, reviewAll, reviewItem } from '../api/review';
 import { toast } from './uiStore';
 import { useAppStore } from './appStore';
 
-export type DrawerTab = 'review' | 'todo';
-
 interface ReviewState {
   tree: ReviewTree | null;
   loading: boolean;
   open: boolean;
-  tab: DrawerTab;
   setOpen: (open: boolean) => void;
-  setTab: (tab: DrawerTab) => void;
   /** 会话切换 / done 事件后拉取审批树；有待审批项时自动打开抽屉 */
   load: (taskId: string) => Promise<void>;
   /** SSE done/cancelled 事件直接附带审批树时 */
@@ -26,10 +22,8 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
   tree: null,
   loading: false,
   open: false,
-  tab: 'review',
 
   setOpen: open => set({ open }),
-  setTab: tab => set({ tab }),
 
   load: async taskId => {
     if (!taskId) return;
@@ -37,7 +31,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
     try {
       const data = await getReviewTree(taskId);
       if (data.code === 200 && data.review_tree && data.review_tree.items?.length) {
-        set({ tree: data.review_tree, open: true, tab: 'review' });
+        set({ tree: data.review_tree, open: true });
       } else {
         set({ tree: null });
       }
@@ -49,7 +43,7 @@ export const useReviewStore = create<ReviewState>((set, get) => ({
   },
 
   present: tree => {
-    if (tree.items?.length) set({ tree, open: true, tab: 'review' });
+    if (tree.items?.length) set({ tree, open: true });
   },
 
   clear: () => set({ tree: null }),

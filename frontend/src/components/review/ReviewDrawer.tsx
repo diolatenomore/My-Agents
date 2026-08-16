@@ -1,21 +1,15 @@
-import { FileCheck2, ListTodo, X } from 'lucide-react';
+import { FileCheck2, X } from 'lucide-react';
 import { useReviewStore } from '../../stores/reviewStore';
-import { useTodoStore } from '../../stores/todoStore';
 import { confirmDialog } from '../../stores/uiStore';
-import { cn } from '../../utils/misc';
 import ReviewNode from './ReviewNode';
-import TodoPanel from '../todo/TodoPanel';
 import EmptyState from '../common/EmptyState';
 
-/** 右侧抽屉：文件变更审批 + 任务清单（todo）双面板 */
+/** 右侧抽屉：VFS 文件变更审批树（有待审批项时自动展开） */
 export default function ReviewDrawer() {
   const open = useReviewStore(s => s.open);
-  const tab = useReviewStore(s => s.tab);
-  const setTab = useReviewStore(s => s.setTab);
-  const setOpen = useReviewStore(s => s.setOpen);
   const tree = useReviewStore(s => s.tree);
+  const setOpen = useReviewStore(s => s.setOpen);
   const decideAll = useReviewStore(s => s.decideAll);
-  const todoCount = useTodoStore(s => s.todos.length);
 
   if (!open) return null;
 
@@ -32,48 +26,22 @@ export default function ReviewDrawer() {
 
   return (
     <aside className="drawer-in flex w-96 shrink-0 flex-col border-l border-zinc-200 bg-white">
-      {/* 头部：双 Tab + 关闭 */}
-      <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-zinc-200 px-4">
-        <div className="flex items-center gap-1">
-          <button
-            className={cn(
-              'flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium transition-colors',
-              tab === 'review' ? 'bg-zinc-100 text-zinc-800' : 'text-zinc-500 hover:text-zinc-700',
-            )}
-            onClick={() => setTab('review')}
-          >
-            <FileCheck2 size={14} className={tree ? 'text-amber-500' : undefined} />
-            文件审批
-            {tree && (
-              <span className="rounded-full bg-amber-100 px-1.5 text-[10px] font-medium text-amber-700">
-                {tree.items.length}
-              </span>
-            )}
-          </button>
-          <button
-            className={cn(
-              'flex cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium transition-colors',
-              tab === 'todo' ? 'bg-zinc-100 text-zinc-800' : 'text-zinc-500 hover:text-zinc-700',
-            )}
-            onClick={() => setTab('todo')}
-          >
-            <ListTodo size={14} />
-            任务清单
-            {todoCount > 0 && (
-              <span className="rounded-full bg-indigo-100 px-1.5 text-[10px] font-medium text-indigo-600">
-                {todoCount}
-              </span>
-            )}
-          </button>
+      <div className="flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 px-4">
+        <div className="flex items-center gap-2">
+          <FileCheck2 size={16} className="text-amber-500" />
+          <span className="text-sm font-semibold text-zinc-800">文件变更审批</span>
+          {tree && (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+              {tree.items.length} 项
+            </span>
+          )}
         </div>
-        <button className="icon-btn" onClick={() => setOpen(false)} aria-label="关闭面板">
+        <button className="icon-btn" onClick={() => setOpen(false)} aria-label="关闭审批面板">
           <X size={16} />
         </button>
       </div>
 
-      {tab === 'todo' ? (
-        <TodoPanel />
-      ) : tree ? (
+      {tree ? (
         <>
           <div className="flex shrink-0 gap-2 border-b border-zinc-100 px-4 py-2.5">
             <button className="btn btn-success-soft flex-1 text-xs" onClick={() => void handleAll(true)}>

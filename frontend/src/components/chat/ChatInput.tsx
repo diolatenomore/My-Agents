@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Send, Square } from 'lucide-react';
 import { useAppStore } from '../../stores/appStore';
 import { useChatStore } from '../../stores/chatStore';
+import TodoBar from './TodoBar';
 
 export default function ChatInput() {
   const [text, setText] = useState('');
@@ -36,6 +37,7 @@ export default function ChatInput() {
   return (
     <div className="shrink-0 border-t border-zinc-200 bg-white px-6 pt-4 pb-4">
       <div className="mx-auto w-full max-w-3xl">
+        <TodoBar />
         {noModel && (
           <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
             未选择模型，发送前请先前往
