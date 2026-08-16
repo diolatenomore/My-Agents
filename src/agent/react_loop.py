@@ -340,7 +340,7 @@ async def _compress_phase2_llm_summary(
     将中间区消息序列化后调用 LLM 生成摘要。
     返回摘要文本。
     """
-    prompt = _build_summary_prompt(middle, previous_summary, context_tokens)
+    prompt = _build_summary_prompt(middle, previous_summary)
     # 摘要 token 上限：max(context_tokens * 0.2, 2000)，上限为配置的最大输出
     max_summary_tokens = max(int(context_tokens * 0.20), 2000)
     max_summary_tokens = min(max_summary_tokens, model_config["max_output_tokens"])
