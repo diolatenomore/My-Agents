@@ -424,16 +424,14 @@ async def _compress(
     return True
 
 
-# ========== TODO Hydration ==========
+# ========== Todo Hydration ==========
 
 def _hydrate_todo_store(todo_store: TodoStore, context_messages: list[dict]):
-    """从对话历史中恢复 TODO 状态
+    """从对话历史中恢复 Todo 状态
 
     从后往前扫描 context_messages，找到最近一次 todo 工具的 tool 返回消息，
     验证其对应一个 assistant 的 todo 调用后，解析 JSON 重建 TodoStore。
     """
-    import json
-
     # 只往前找最近 10 条消息
     recent_messages = context_messages[-10:] if len(context_messages) > 10 else context_messages
 
@@ -505,7 +503,7 @@ async def run_agent_stream(
     # 创建本会话的 TodoStore（子 Agent 不会创建，实现天然隔离）
     todo_store = TodoStore()
 
-    # 从对话历史恢复 TODO 状态（hydration）
+    # 从对话历史恢复 Todo 状态（hydration）
     _hydrate_todo_store(todo_store, context_messages)
 
     # 从模型配置统一提取运行时参数
