@@ -41,7 +41,8 @@ export interface ToolCallRecord {
 /** GET /api/sessions/{sid}/messages 返回的单条历史消息 */
 export interface StoredMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  /** user 消息为 segments 数组格式（含 skill 占位符），其余角色为字符串 */
+  content: string | SkillSegment[] | null;
   reasoning_content?: string | null;
   tool_calls?: ToolCallRecord[];
   tool_call_id?: string;
@@ -121,6 +122,19 @@ export interface SkillInfo {
   version?: string;
   tags?: string[];
   disabled?: boolean;
+}
+
+/** 用户消息的展示分段：文字段或 skill 占位符（chip 位置 = 数组顺序） */
+export type SkillSegment =
+  | { type: 'text'; text: string }
+  | { type: 'skill'; name: string };
+
+/** 把展示分段拼接为纯文本（skill 段不贡献字符，前后空白归一化） */
+export function joinSegments(segments: SkillSegment[]): string {
+  const text = segments
+    .map(seg => (seg.type === 'text' ? seg.text : ' '))
+    .join('');
+  return text.replace(/[^\S\n]+/g, ' ').replace(/ ?\n ?/g, '\n').trim();
 }
 
 // ===== VFS 文件变更审批 =====
@@ -245,6 +259,8 @@ export interface UserEntry {
   kind: 'user';
   id: string;
   content: string;
+  /** 带 skill 占位符时的展示分段（content 为其纯文本投影） */
+  segments?: SkillSegment[];
 }
 
 export interface TurnEntry {

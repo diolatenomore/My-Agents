@@ -1,11 +1,13 @@
 import { create } from 'zustand';
 import type {
   ChatEntry,
+  SkillSegment,
   StoredMessage,
   StreamEvent,
   TurnBlockView,
   TurnEntry,
 } from '../types';
+import { joinSegments } from '../types';
 import { cancelChat, streamChat } from '../api/chat';
 import { decideTool } from '../api/tools';
 import { getSessionMessages } from '../api/sessions';
@@ -31,7 +33,17 @@ export function buildEntriesFromHistory(messages: StoredMessage[]): ChatEntry[] 
     if (m.role === 'system') continue;
 
     if (m.role === 'user') {
-      entries.push({ kind: 'user', id: uid(), content: typeof m.content === 'string' ? m.content : '' });
+      const segments = Array.isArray(m.content) ? m.content : undefined;
+      entries.push({
+        kind: 'user',
+        id: uid(),
+        content: segments
+          ? joinSegments(segments)
+          : typeof m.content === 'string'
+            ? m.content
+            : '',
+        segments,
+      });
       continue;
     }
 
@@ -67,7 +79,7 @@ export function buildEntriesFromHistory(messages: StoredMessage[]): ChatEntry[] 
         }
         i = j - 1;
       }
-      if (m.content) {
+      if (typeof m.content === 'string' && m.content) {
         blocks.push({ kind: 'text', id: uid(), content: m.content });
       }
       if (blocks.length > 0) {
@@ -93,7 +105,7 @@ interface ChatState {
   contextTokens: number;
   historyLoading: boolean;
   abortController: AbortController | null;
-  send: (query: string) => Promise<void>;
+  send: (query: string, skills?: string[], segments?: SkillSegment[]) => Promise<void>;
   stop: () => Promise<void>;
   loadHistory: (sessionId: string) => Promise<void>;
   clearEntries: () => void;
@@ -276,7 +288,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     historyLoading: false,
     abortController: null,
 
-    send: async query => {
+    send: async (query, skills, segments) => {
       const { streaming } = get();
       if (streaming) return;
       const app = useAppStore.getState();
@@ -285,7 +297,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       set(state => ({
         entries: [
           ...state.entries,
-          { kind: 'user', id: uid(), content: query },
+          { kind: 'user', id: uid(), content: query, segments },
           { kind: 'turn', id: turnId, blocks: [], status: 'streaming' },
         ],
         streaming: true,
@@ -299,6 +311,8 @@ export const useChatStore = create<ChatState>((set, get) => {
             session_id: app.currentSessionId || undefined,
             model_id: app.selectedModelId || undefined,
             project_id: app.currentProjectId || undefined,
+            skills: skills?.length ? skills : undefined,
+            segments: segments?.length ? segments : undefined,
           },
           ev => applyEvent(turnId, ev),
           controller.signal,

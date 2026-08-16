@@ -126,19 +126,6 @@ class SessionStore:
                 (tokens, session_id),
             )
 
-    @classmethod
-    async def get_last_n_display_messages(cls, session_id: str, n: int = 50) -> list[dict]:
-        """获取最近 n 条消息（按时间正序）"""
-        async with db_pool.get_conn() as conn:
-            rows = await (await conn.execute(
-                """SELECT content FROM (
-                        SELECT id, content FROM session_messages
-                        WHERE session_id = ? ORDER BY id DESC LIMIT ?
-                    ) sub ORDER BY id ASC""",
-                (session_id, n),
-            )).fetchall()
-            return [json.loads(row["content"]) for row in rows]
-
     # ========== 上下文消息（context_messages）CRUD ==========
 
     @classmethod

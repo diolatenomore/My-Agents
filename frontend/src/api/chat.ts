@@ -1,4 +1,4 @@
-import type { StreamEvent } from '../types';
+import type { SkillSegment, StreamEvent } from '../types';
 import { ApiError } from './client';
 
 export interface ChatStreamBody {
@@ -7,6 +7,10 @@ export interface ChatStreamBody {
   model_id?: string;
   /** 仅新会话首条消息时生效（会话归属项目后不再变化） */
   project_id?: string;
+  /** "/" 选择的显式注入技能名（后端前置注入到模型版 user message） */
+  skills?: string[];
+  /** 带 skill 占位符时的展示分段（仅持久化展示用，不进模型路径） */
+  segments?: SkillSegment[];
 }
 
 /**

@@ -74,7 +74,7 @@ export default function MessageList() {
           ) : (
             entries.map(e =>
               e.kind === 'user' ? (
-                <UserBubble key={e.id} content={e.content} />
+                <UserBubble key={e.id} content={e.content} segments={e.segments} />
               ) : (
                 <TurnView key={e.id} turn={e} />
               ),

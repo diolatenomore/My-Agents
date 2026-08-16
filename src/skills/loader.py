@@ -389,3 +389,75 @@ def build_skills_catalog(skills_dir: str = "skills") -> str:
     for meta in metas:
         lines.append(f"- **{meta.name}**: {meta.description}")
     return "\n".join(lines)
+
+
+# 显式注入的技能数量上限（每个 skill 为完整 SKILL.md，防止上下文爆炸）
+MAX_INJECT_SKILLS = 5
+
+
+def build_skill_injection(names: Optional[list]) -> Optional[str]:
+    """按显式名单构建 skill 注入块（前置到 user message，随 query 变化不碰 system prompt）
+
+    入参是前端 "/" 选择后随请求体传来的名单，而非从 query 文本解析，
+    因此不存在"用户恰好输入了占位符样子的文字"的歧义。
+
+    Hermes 风格：Skill 正文不包裹任何标签，自然融入上下文；
+    元信息用轻量方括号标注，边界靠自然语言过渡句。
+
+    Args:
+        names: 技能名列表（去重保序，跳过未知/禁用名，超上限截断）
+
+    Returns:
+        可前置到 user message 的注入块；无可注入技能时返回 None
+    """
+    if not names:
+        return None
+
+    loader = get_loader()
+
+    valid_names = []
+    seen = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        if loader.is_disabled(name):
+            logger.warning(f"显式注入跳过（已禁用）: {name}")
+            continue
+        if not loader.load_skill(name):
+            logger.warning(f"显式注入跳过（不存在或为空）: {name}")
+            continue
+        valid_names.append(name)
+        if len(valid_names) >= MAX_INJECT_SKILLS:
+            logger.warning(f"显式注入达到上限 {MAX_INJECT_SKILLS}，忽略其余: {[n for n in names if n not in set(valid_names)]}")
+            break
+
+    if not valid_names:
+        return None
+
+    parts = []
+    total = len(valid_names)
+    for i, name in enumerate(valid_names, 1):
+        content = loader.load_skill(name)
+        files = loader.list_skill_dir(name)
+
+        if total == 1:
+            parts.append(f'[SYSTEM: 用户调用了 "{name}" skill，请遵循以下指令]')
+        else:
+            parts.append(f'[SYSTEM: 用户调用了 "{name}" skill（第 {i}/{total} 个），请遵循以下指令]')
+
+        parts.append("")
+        parts.append(content)
+
+        # Skill 目录元信息（绝对路径，执行技能脚本时作为 execute 的 cwd）
+        parts.append("")
+        parts.append(f"[Skill 目录: {os.path.join(loader.skills_dir, name)}（执行脚本时将 execute 的 cwd 设为此路径）]")
+
+        # 附属文件清单
+        if files:
+            parts.append(f"[附属文件: {', '.join(files)}]")
+
+        parts.append("")
+
+    logger.info(f"显式注入 skill: {', '.join(valid_names)}")
+    return "\n".join(parts).rstrip()

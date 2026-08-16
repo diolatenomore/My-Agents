@@ -77,12 +77,36 @@ app.add_middleware(
 )
 
 
+def _display_text(content) -> str:
+    """把展示消息的 content 拼接为纯文本（user 消息可能为 segments 数组格式）"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(seg.get("text", "") for seg in content if isinstance(seg, dict) and seg.get("type") == "text")
+    return ""
+
+
+def _sanitize_segments(segments: Optional[list]) -> Optional[list]:
+    """清洗前端传来的展示分段：只保留 text/skill 两类且字段类型正确，其余丢弃"""
+    if not isinstance(segments, list):
+        return None
+    cleaned = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        if seg.get("type") == "text" and isinstance(seg.get("text"), str):
+            cleaned.append({"type": "text", "text": seg["text"]})
+        elif seg.get("type") == "skill" and isinstance(seg.get("name"), str):
+            cleaned.append({"type": "skill", "name": seg["name"]})
+    return cleaned or None
+
+
 async def _maybe_generate_title(session_id: str, messages: list, session_manager: SessionManager, model_id: str):
     """在新会话首轮对话后，异步生成标题（fire-and-forget）"""
     try:
         current = await session_manager.get_session(session_id)
         if current and not current.title:
-            user_msg = next((m["content"] for m in messages if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+            user_msg = next((_display_text(m.get("content")) for m in messages if m.get("role") == "user"), "")
             assistant_msg = next((m["content"] for m in messages if m.get("role") == "assistant" and isinstance(m.get("content"), str)), "")
             if user_msg:
                 title = await generate_title(user_msg, assistant_msg, model_id)
@@ -123,7 +147,10 @@ async def chat_stream(chat_request: ChatRequest):
     session_id = chat_request.session_id or str(uuid.uuid4())
 
     return StreamingResponse(
-        _stream_events(query, session_id, app.state.session_manager, chat_request.model_id, chat_request.project_id),
+        _stream_events(
+            query, session_id, app.state.session_manager, chat_request.model_id, chat_request.project_id,
+            skills=chat_request.skills, segments=chat_request.segments,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -133,10 +160,14 @@ async def chat_stream(chat_request: ChatRequest):
     )
 
 
-async def _stream_events(query: str, session_id: str, session_manager: SessionManager, model_id: str, project_id: Optional[str] = None):
+async def _stream_events(
+    query: str, session_id: str, session_manager: SessionManager, model_id: str, project_id: Optional[str] = None,
+    skills: Optional[list] = None, segments: Optional[list] = None,
+):
     """生成 SSE 事件流"""
     from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
-    from src.agent.react_loop import _build_messages, _build_system_prompt, _get_memory_block
+    from src.agent.react_loop import _build_system_prompt, _get_memory_block
+    from src.skills.loader import build_skill_injection
 
     display_messages: list = []
     context_messages: list = []
@@ -183,13 +214,20 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         dynamic_block = get_memory_service().get_dynamic_block(query)
         augmented_query = f"以下为用户原始输入：\n{query}\n\n{dynamic_block}" if dynamic_block else query
 
+        # 显式注入的 skill 前置到 user message（与动态记忆同轨道：模型可见、展示历史保持干净）
+        skill_block = build_skill_injection(skills)
+        if skill_block:
+            augmented_query = f"{skill_block}\n\n{augmented_query}"
+
         # 构建完整的 API 上下文：system prompt + 已持久化上下文 + 新 query（动态记忆版）
         context_messages = [{"role": "system", "content": system_prompt}]
         context_messages.extend(context_msgs_loaded)
         context_messages.append({"role": "user", "content": augmented_query})
 
         # 构建展示消息列表（仅用于持久化和前端展示）
-        display_history.append({"role": "user", "content": query})
+        # user 消息 content 统一为 segments 数组（skill 占位符的位置信息），纯文本按需拼接
+        user_content = _sanitize_segments(segments) or [{"type": "text", "text": query}]
+        display_history.append({"role": "user", "content": user_content})
         display_messages = display_history
 
         # 提前通知前端 session_id
