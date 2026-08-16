@@ -42,21 +42,38 @@ class ProjectStore:
         return Project(project_id=project_id, name=name, work_dir=work_dir)
 
     @classmethod
-    async def update_project(cls, project_id: str, name: Optional[str] = None, work_dir: Optional[str] = None):
+    async def update_project(cls, project_id: str, name: str):
+        """更新项目名称（工作目录创建后不可修改）"""
         async with db_pool.get_conn() as conn:
-            if name is not None:
-                await conn.execute("UPDATE projects SET name = ?, updated_at = datetime('now') WHERE project_id = ?",
-                                   (name, project_id))
-            if work_dir is not None:
-                await conn.execute("UPDATE projects SET work_dir = ?, updated_at = datetime('now') WHERE project_id = ?",
-                                   (work_dir, project_id))
+            await conn.execute("UPDATE projects SET name = ?, updated_at = datetime('now') WHERE project_id = ?",
+                               (name, project_id))
 
     @classmethod
-    async def delete_project(cls, project_id: str):
-        """删除项目，归属它的会话 project_id 置空（会话保留为普通聊天）"""
-        async with db_pool.get_conn() as conn:
-            await conn.execute("UPDATE sessions SET project_id = NULL WHERE project_id = ?", (project_id,))
+    async def delete_project_with_sessions(cls, project_id: str) -> list[str]:
+        """单个事务内删除项目及其全部归属会话（含会话消息、上下文消息、VFS 数据库记录）。
+
+        返回被删除的会话 ID 列表，供调用方清理非数据库资源（system prompt 缓存、暂存区磁盘文件）。
+        """
+        async with db_pool.get_conn() as conn:  # get_conn 整体处于一个 BEGIN/COMMIT 事务中
+            rows = await (await conn.execute(
+                "SELECT session_id FROM sessions WHERE project_id = ?", (project_id,),
+            )).fetchall()
+            # 以子查询圈定归属会话，逐表删除其关联数据（VFS 各表以 task_id 关联会话）
+            for table, key in [
+                ("staging_records", "task_id"),
+                ("copy_records", "task_id"),
+                ("diff_records", "task_id"),
+                ("review_items", "task_id"),
+                ("session_messages", "session_id"),
+                ("context_messages", "session_id"),
+            ]:
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE {key} IN (SELECT session_id FROM sessions WHERE project_id = ?)",
+                    (project_id,),
+                )
+            await conn.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
             await conn.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+            return [row["session_id"] for row in rows]
 
     @classmethod
     async def list_projects(cls) -> list[Project]:

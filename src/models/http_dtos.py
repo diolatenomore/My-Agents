@@ -46,8 +46,7 @@ class ProjectCreateRequest(BaseModel):
 
 
 class ProjectUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    work_dir: Optional[str] = None
+    name: str = Field(..., description="项目名称（项目创建后仅允许改名，工作目录不可修改）")
 
 
 class GetTaskStatusResponse(BaseModel):

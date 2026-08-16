@@ -13,11 +13,18 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useAppStore } from '../../stores/appStore';
-import { newSessionInProject, removeSession, renameSessionAction, switchSession } from '../../stores/actions';
+import {
+  newSessionInProject,
+  removeProjectAction,
+  removeSession,
+  renameProjectAction,
+  renameSessionAction,
+  switchSession,
+} from '../../stores/actions';
 import { cn, formatRelativeTime } from '../../utils/misc';
 import Modal from '../common/Modal';
 import ProjectManagerDialog from '../project/ProjectManagerDialog';
-import type { SessionDTO } from '../../types';
+import type { ProjectDTO, SessionDTO } from '../../types';
 
 const NAV_ITEMS = [
   { to: '/memory', icon: Brain, label: '记忆' },
@@ -150,6 +157,8 @@ export default function Sidebar() {
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>(readCollapsedProjects);
   const [renaming, setRenaming] = useState<SessionDTO | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [renamingProject, setRenamingProject] = useState<ProjectDTO | null>(null);
+  const [projectRenameValue, setProjectRenameValue] = useState('');
   const [manageOpen, setManageOpen] = useState(false);
 
   const chatSessions = useMemo(() => sessions.filter(s => !s.project_id), [sessions]);
@@ -208,6 +217,20 @@ export default function Sidebar() {
     setRenaming(null);
     if (title && title !== renaming.title) {
       await renameSessionAction(renaming.session_id, title);
+    }
+  };
+
+  const openProjectRename = (p: ProjectDTO) => {
+    setProjectRenameValue(p.name);
+    setRenamingProject(p);
+  };
+
+  const confirmProjectRename = async () => {
+    if (!renamingProject) return;
+    const name = projectRenameValue.trim();
+    setRenamingProject(null);
+    if (name && name !== renamingProject.name) {
+      await renameProjectAction(renamingProject.project_id, name);
     }
   };
 
@@ -315,6 +338,28 @@ export default function Sidebar() {
                         <FolderOpen size={15} className="shrink-0 text-indigo-500" />
                         <span className="truncate">{p.name}</span>
                       </button>
+                      <span className="hidden shrink-0 items-center group-hover:flex">
+                        <button
+                          className="icon-btn h-6 w-6"
+                          title="重命名项目"
+                          onClick={e => {
+                            e.stopPropagation();
+                            openProjectRename(p);
+                          }}
+                        >
+                          <Pencil size={12} />
+                        </button>
+                        <button
+                          className="icon-btn h-6 w-6 hover:text-red-500"
+                          title="删除项目"
+                          onClick={e => {
+                            e.stopPropagation();
+                            void removeProjectAction(p);
+                          }}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </span>
                       <button
                         className="icon-btn mr-1 h-6 w-6 shrink-0 hover:text-indigo-600"
                         title={`在「${p.name}」中新建会话`}
@@ -360,6 +405,36 @@ export default function Sidebar() {
           onChange={e => setRenameValue(e.target.value)}
           onKeyDown={e => {
             if (e.key === 'Enter' && !e.nativeEvent.isComposing) void confirmRename();
+          }}
+        />
+      </Modal>
+
+      {/* 项目重命名弹窗（仅名称） */}
+      <Modal
+        open={renamingProject !== null}
+        title="重命名项目"
+        onClose={() => setRenamingProject(null)}
+        width="max-w-sm"
+        footer={
+          <>
+            <button className="btn btn-outline" onClick={() => setRenamingProject(null)}>
+              取消
+            </button>
+            <button className="btn btn-primary" onClick={() => void confirmProjectRename()}>
+              保存
+            </button>
+          </>
+        }
+      >
+        <input
+          className="input"
+          maxLength={50}
+          placeholder="输入新名称（≤50 字）"
+          value={projectRenameValue}
+          autoFocus
+          onChange={e => setProjectRenameValue(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.nativeEvent.isComposing) void confirmProjectRename();
           }}
         />
       </Modal>

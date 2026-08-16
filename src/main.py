@@ -144,6 +144,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
     last_context_tokens = 0
     compression_happened = False
     display_history = None
+    is_new_session = False
     cancel_registry = app.state.cancel_registry
 
     try:
@@ -154,6 +155,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         # 已有会话以库中为准，不随请求变化（保证 VFS 暂存区/system prompt 缓存一致）
         session = await session_manager.get_session(session_id)
         if session is None:
+            is_new_session = True
             project = await ProjectStore.get_project(project_id) if project_id else None
             await session_manager.create_session(session_id, project_id=project.project_id if project else None)
         else:
@@ -243,8 +245,8 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         except Exception as e:
             logger.error(f"保存会话消息失败: {e}")
 
-        # Fire-and-forget 生成会话标题（仅新会话首轮）
-        if not display_history:
+        # Fire-and-forget 生成会话标题（仅新会话首轮；display_history 已含本轮消息，不能用作判断）
+        if is_new_session:
             asyncio.create_task(_maybe_generate_title(session_id, display_messages, session_manager, model_id))
 
         # Fire-and-forget 提取长期记忆（按轮次间隔控制）
@@ -458,7 +460,11 @@ async def _cleanup_vfs_data(task_id: str):
     except Exception as e:
         logger.error(f"清理 VFS 数据库记录失败 (task_id={task_id}): {e}")
 
-    # 清理暂存区磁盘文件
+    _remove_staging_dir(task_id)
+
+
+def _remove_staging_dir(task_id: str):
+    """清理暂存区磁盘目录（会话/项目删除后调用）"""
     staging_dir = os.path.join(STAGING_AREA_PATH, task_id)
     if os.path.exists(staging_dir):
         try:
@@ -522,9 +528,21 @@ async def list_projects():
     return JSONResponse(content=[_project_to_dto(p) for p in projects])
 
 
+async def find_project_conflict(name: Optional[str], work_dir: Optional[str], exclude_id: str = "") -> Optional[str]:
+    """项目查重：名称精确匹配；工作目录按本机路径规则归一化后比较（Windows 忽略大小写）。返回冲突提示，无冲突返回 None"""
+    for p in await ProjectStore.list_projects():
+        if p.project_id == exclude_id:
+            continue
+        if name and p.name == name:
+            return f"项目名称「{name}」已存在"
+        if work_dir and os.path.normcase(p.work_dir) == os.path.normcase(work_dir):
+            return f"工作目录 {work_dir} 已被项目「{p.name}」使用"
+    return None
+
+
 @app.post('/api/projects')
 async def create_project(req: ProjectCreateRequest):
-    """创建项目：name 非空，work_dir 必须是已存在的目录"""
+    """创建项目：name 非空，work_dir 必须是已存在的目录，名称与工作目录均不可与现有项目重复"""
     name = req.name.strip()
     if not name:
         return JSONResponse(content={"code": 400, "message": "项目名称不能为空"}, status_code=400)
@@ -533,36 +551,42 @@ async def create_project(req: ProjectCreateRequest):
     work_dir = os.path.normpath(os.path.abspath(req.work_dir.strip()))
     if not os.path.isdir(work_dir):
         return JSONResponse(content={"code": 400, "message": f"工作目录不存在: {work_dir}"}, status_code=400)
+    conflict = await find_project_conflict(name, work_dir)
+    if conflict:
+        return JSONResponse(content={"code": 400, "message": conflict}, status_code=400)
     project = await ProjectStore.create_project(str(uuid.uuid4()), name, work_dir)
     return JSONResponse(content=_project_to_dto(project))
 
 
 @app.put('/api/projects/{project_id}')
 async def update_project(req: ProjectUpdateRequest, project_id: str = Path(...)):
-    """更新项目名称/工作目录"""
+    """更新项目（仅允许修改名称，工作目录不可改；名称不可与其它项目重复）"""
     project = await ProjectStore.get_project(project_id)
     if not project:
         return JSONResponse(content={"code": 404, "message": "项目不存在"}, status_code=404)
-    name = req.name.strip() if req.name else None
-    if name is not None and not name:
+    name = req.name.strip()
+    if not name:
         return JSONResponse(content={"code": 400, "message": "项目名称不能为空"}, status_code=400)
-    work_dir = None
-    if req.work_dir is not None:
-        work_dir = os.path.normpath(os.path.abspath(req.work_dir.strip()))
-        if not os.path.isdir(work_dir):
-            return JSONResponse(content={"code": 400, "message": f"工作目录不存在: {work_dir}"}, status_code=400)
-    await ProjectStore.update_project(project_id, name=name, work_dir=work_dir)
+    if len(name) > 50:
+        return JSONResponse(content={"code": 400, "message": "项目名称不能超过50字"}, status_code=400)
+    conflict = await find_project_conflict(name, None, exclude_id=project_id)
+    if conflict:
+        return JSONResponse(content={"code": 400, "message": conflict}, status_code=400)
+    await ProjectStore.update_project(project_id, name)
     return JSONResponse(content=_project_to_dto(await ProjectStore.get_project(project_id)))
 
 
 @app.delete('/api/projects/{project_id}')
 async def delete_project(project_id: str = Path(...)):
-    """删除项目（归属会话保留，project_id 置空）"""
+    """删除项目：ProjectStore 在单个事务内级联删除项目及其归属会话（含消息、上下文、VFS 数据库记录），接口层再清理各会话的缓存与暂存区磁盘文件"""
     project = await ProjectStore.get_project(project_id)
     if not project:
         return JSONResponse(content={"code": 404, "message": "项目不存在"}, status_code=404)
-    await ProjectStore.delete_project(project_id)
-    return JSONResponse(content={"code": 200, "message": f"项目 {project.name} 已删除"})
+    session_ids = await ProjectStore.delete_project_with_sessions(project_id)
+    for sid in session_ids:
+        app.state.system_prompt_cache.clear(sid)
+        _remove_staging_dir(sid)
+    return JSONResponse(content={"code": 200, "message": f"项目 {project.name} 及其 {len(session_ids)} 个会话已删除"})
 
 
 # ========== 记忆管理 API ==========

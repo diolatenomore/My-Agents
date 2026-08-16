@@ -2,13 +2,14 @@ import { useEffect, useState } from 'react';
 import { FolderOpen, Pencil, Plus, Trash2 } from 'lucide-react';
 import Modal from '../common/Modal';
 import { useAppStore } from '../../stores/appStore';
-import { createProject, deleteProject, updateProject } from '../../api/projects';
-import { confirmDialog, toast } from '../../stores/uiStore';
+import { createProject, updateProject } from '../../api/projects';
+import { removeProjectAction } from '../../stores/actions';
+import { toast } from '../../stores/uiStore';
 import type { ProjectDTO } from '../../types';
 
 type Mode = 'list' | 'create' | 'edit';
 
-/** 项目管理对话框：列表 + 新建/编辑/删除。工作目录为手动输入的绝对路径（后端校验存在）。initialMode='create' 时直达新建表单，创建成功即关闭 */
+/** 项目管理对话框：列表 + 新建/编辑/删除。新建时工作目录为手动输入的绝对路径（后端校验存在）；编辑仅允许改名。initialMode='create' 时直达新建表单，创建成功即关闭 */
 export default function ProjectManagerDialog({
   open,
   onClose,
@@ -51,7 +52,7 @@ export default function ProjectManagerDialog({
       setError('请输入项目名称');
       return;
     }
-    if (!workDir.trim()) {
+    if (mode === 'create' && !workDir.trim()) {
       setError('请输入工作目录的绝对路径');
       return;
     }
@@ -62,7 +63,8 @@ export default function ProjectManagerDialog({
         await createProject({ name: name.trim(), work_dir: workDir.trim() });
         toast('success', '项目已创建');
       } else if (editing) {
-        await updateProject(editing.project_id, { name: name.trim(), work_dir: workDir.trim() });
+        // 编辑仅允许改名，工作目录不可修改
+        await updateProject(editing.project_id, { name: name.trim() });
         toast('success', '项目已更新');
       }
       await Promise.all([refreshProjects(), refreshSessions()]);
@@ -79,22 +81,7 @@ export default function ProjectManagerDialog({
     }
   };
 
-  const handleDelete = async (project: ProjectDTO) => {
-    const ok = await confirmDialog({
-      title: '删除项目',
-      message: `确定删除项目「${project.name}」？其会话将保留，并回到「无项目」状态。`,
-      confirmText: '删除',
-      danger: true,
-    });
-    if (!ok) return;
-    try {
-      await deleteProject(project.project_id);
-      await Promise.all([refreshProjects(), refreshSessions()]);
-      toast('success', '项目已删除');
-    } catch (err) {
-      toast('error', err instanceof Error ? err.message : '删除失败');
-    }
-  };
+  const handleDelete = (project: ProjectDTO) => removeProjectAction(project);
 
   return (
     <Modal
@@ -170,26 +157,35 @@ export default function ProjectManagerDialog({
             <input
               className="input"
               maxLength={50}
-              placeholder="如 my-agents"
+              placeholder="请输入文本"
               value={name}
               autoFocus
               onChange={e => setName(e.target.value)}
             />
           </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-600">
-              工作目录（已存在目录的绝对路径）
-            </label>
-            <input
-              className="input font-mono text-xs"
-              placeholder="如 D:\PythonCode\my-project"
-              value={workDir}
-              onChange={e => setWorkDir(e.target.value)}
-            />
-            <p className="mt-1 text-[11px] text-zinc-400">
-              归属该项目的会话中，文件操作与命令的相对路径将以该目录为基准解析。
-            </p>
-          </div>
+          {mode === 'create' ? (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-zinc-600">
+                工作目录（已存在目录的绝对路径）
+              </label>
+              <input
+                className="input font-mono text-xs"
+                placeholder="因浏览器限制，请手动输入绝对路径"
+                value={workDir}
+                onChange={e => setWorkDir(e.target.value)}
+              />
+              <p className="mt-1 text-[11px] text-zinc-400">
+                归属该项目的会话中，文件操作与命令的相对路径将以该目录为基准解析。创建后不可修改。
+              </p>
+            </div>
+          ) : (
+            <div>
+              <label className="mb-1 block text-xs font-medium text-zinc-600">工作目录（不可修改）</label>
+              <div className="truncate rounded-md border border-zinc-100 bg-zinc-50 px-3 py-2 font-mono text-xs text-zinc-400" title={workDir}>
+                {workDir}
+              </div>
+            </div>
+          )}
           {error && <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
         </div>
       )}

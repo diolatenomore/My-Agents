@@ -15,7 +15,7 @@ export function createProject(values: ProjectFormValues): Promise<ProjectDTO> {
 
 export function updateProject(
   projectId: string,
-  values: Partial<ProjectFormValues>,
+  values: { name: string },
 ): Promise<ProjectDTO> {
   return apiFetch(`/api/projects/${projectId}`, {
     method: 'PUT',
