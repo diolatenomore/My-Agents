@@ -6,9 +6,11 @@ import tempfile
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
+from pathlib import Path as FilePath
 
 from fastapi import FastAPI, File, HTTPException, Path, Query, Request, UploadFile
-from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, JSONResponse, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 import asyncio
@@ -87,12 +89,23 @@ async def _maybe_generate_title(session_id: str, messages: list, session_manager
         logger.error(f"生成标题失败: {e}")
 
 
+FRONTEND_DIST = FilePath(__file__).resolve().parent.parent / 'frontend' / 'dist'
+LEGACY_HTML = FilePath(__file__).resolve().parent / 'test_chat.html'
+
+
 @app.get('/')
 async def index():
-    """提供测试页面"""
-    html_path = os.path.join(os.path.dirname(__file__), 'test_chat.html')
-    with open(html_path, 'r', encoding='utf-8') as f:
-        return HTMLResponse(f.read())
+    """入口页：优先返回 frontend 构建产物，未构建时回退旧测试页"""
+    index_html = FRONTEND_DIST / 'index.html'
+    if index_html.is_file():
+        return FileResponse(index_html)
+    return HTMLResponse(LEGACY_HTML.read_text(encoding='utf-8'))
+
+
+@app.get('/legacy')
+async def legacy():
+    """旧版测试页面（保留备用）"""
+    return HTMLResponse(LEGACY_HTML.read_text(encoding='utf-8'))
 
 
 @app.post('/api/chat/stream')
@@ -711,6 +724,23 @@ async def delete_model(model_id: str):
         return JSONResponse(content={"code": 200, "message": "删除成功"})
     except Exception as e:
         return JSONResponse(content={"code": 500, "message": f"删除失败: {str(e)}"}, status_code=500)
+
+
+# ===== 前端静态托管（必须位于所有 API 路由之后注册）=====
+
+if (FRONTEND_DIST / 'index.html').is_file():
+    app.mount('/assets', StaticFiles(directory=FRONTEND_DIST / 'assets'), name='frontend-assets')
+
+    @app.get('/{full_path:path}')
+    async def spa_fallback(full_path: str):
+        """SPA 路由回退：非 /api 路径优先返回静态文件，否则返回 index.html"""
+        if full_path.startswith('api'):
+            raise HTTPException(status_code=404, detail='Not Found')
+        if full_path:
+            candidate = (FRONTEND_DIST / full_path).resolve()
+            if str(candidate).startswith(str(FRONTEND_DIST.resolve())) and candidate.is_file():
+                return FileResponse(candidate)
+        return FileResponse(FRONTEND_DIST / 'index.html')
 
 
 if __name__ == '__main__':
