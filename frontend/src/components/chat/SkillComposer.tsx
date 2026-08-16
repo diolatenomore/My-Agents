@@ -37,9 +37,11 @@ interface MenuState {
   open: boolean;
   filter: string;
   active: number;
+  /** 已注入为 chip 的技能名，列表中不再出现 */
+  excluded: string[];
 }
 
-const MENU_CLOSED: MenuState = { open: false, filter: '', active: 0 };
+const MENU_CLOSED: MenuState = { open: false, filter: '', active: 0, excluded: [] };
 
 function buildChip(name: string): HTMLSpanElement {
   const chip = document.createElement('span');
@@ -75,7 +77,20 @@ function serialize(el: HTMLElement): ComposerValue {
   };
   walkChildren(el);
 
-  return { text: joinSegments(segments), skills, segments };
+  // 合并相邻文本段、丢弃空段（编辑过程中会产生空文本节点）
+  const merged: SkillSegment[] = [];
+  for (const seg of segments) {
+    if (seg.type === 'text') {
+      if (!seg.text) continue;
+      const last = merged[merged.length - 1];
+      if (last?.type === 'text') last.text += seg.text;
+      else merged.push({ ...seg });
+    } else {
+      merged.push(seg);
+    }
+  }
+
+  return { text: joinSegments(merged), skills, segments: merged };
 }
 
 /**
@@ -95,8 +110,8 @@ const SkillComposer = forwardRef<SkillComposerHandle, SkillComposerProps>(functi
   const filtered = useMemo(() => {
     if (!menu.open) return [];
     const f = menu.filter.toLowerCase();
-    return skills.filter(s => !f || s.name.toLowerCase().includes(f));
-  }, [menu.open, menu.filter, skills]);
+    return skills.filter(s => (!f || s.name.toLowerCase().includes(f)) && !menu.excluded.includes(s.name));
+  }, [menu.open, menu.filter, menu.excluded, skills]);
 
   useEffect(() => {
     menuOpenRef.current = menu.open;
@@ -136,8 +151,13 @@ const SkillComposer = forwardRef<SkillComposerHandle, SkillComposerProps>(functi
       return;
     }
     const wasOpen = menuOpenRef.current;
+    // 已注入的技能不再出现在候选列表；退格删掉 chip 后会随 input 事件重新计算
+    const el = editorRef.current;
+    const excluded = el
+      ? Array.from(el.querySelectorAll<HTMLElement>('[data-skill]'), n => n.dataset.skill ?? '')
+      : [];
     // 过滤串变化时高亮重置到首项，避免索引越过后指向已不存在的候选项
-    setMenu(prev => ({ open: true, filter: m[1], active: prev.filter === m[1] ? prev.active : 0 }));
+    setMenu(prev => ({ open: true, filter: m[1], active: prev.filter === m[1] ? prev.active : 0, excluded }));
     if (!wasOpen) onMenuOpen?.();
   };
 
