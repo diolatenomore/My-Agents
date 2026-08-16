@@ -105,7 +105,7 @@ interface ChatState {
   contextTokens: number;
   historyLoading: boolean;
   abortController: AbortController | null;
-  send: (query: string, skills?: string[], segments?: SkillSegment[]) => Promise<void>;
+  send: (segments: SkillSegment[]) => Promise<void>;
   stop: () => Promise<void>;
   loadHistory: (sessionId: string) => Promise<void>;
   clearEntries: () => void;
@@ -288,7 +288,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     historyLoading: false,
     abortController: null,
 
-    send: async (query, skills, segments) => {
+    send: async segments => {
       const { streaming } = get();
       if (streaming) return;
       const app = useAppStore.getState();
@@ -297,7 +297,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       set(state => ({
         entries: [
           ...state.entries,
-          { kind: 'user', id: uid(), content: query, segments },
+          { kind: 'user', id: uid(), content: joinSegments(segments), segments },
           { kind: 'turn', id: turnId, blocks: [], status: 'streaming' },
         ],
         streaming: true,
@@ -307,12 +307,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       try {
         await streamChat(
           {
-            query,
+            segments,
             session_id: app.currentSessionId || undefined,
             model_id: app.selectedModelId || undefined,
             project_id: app.currentProjectId || undefined,
-            skills: skills?.length ? skills : undefined,
-            segments: segments?.length ? segments : undefined,
           },
           ev => applyEvent(turnId, ev),
           controller.signal,

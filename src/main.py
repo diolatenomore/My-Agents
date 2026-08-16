@@ -101,6 +101,29 @@ def _sanitize_segments(segments: Optional[list]) -> Optional[list]:
     return cleaned or None
 
 
+def _segments_plain_text(segments: list) -> str:
+    """segments 派生纯文本（skill 段贡献一个空格），空白归一化——用于记忆检索等只要文字的场景"""
+    parts = [" " if seg.get("type") == "skill" else seg.get("text", "") for seg in segments]
+    s = "".join(parts)
+    s = re.sub(r"[^\S\n]+", " ", s)
+    s = re.sub(r" ?\n ?", "\n", s)
+    return s.strip()
+
+
+def _mark_segments(segments: list) -> str:
+    """segments 派生带行内技能标记的文本：skill 段替换为 [skill:名称]，标记周围不留空白
+
+    例：[skill:file-organize]整理 D:/work 的文件，再[skill:code-arch-optimizer]
+    无 skill 段时与 _segments_plain_text 结果一致。
+    """
+    parts = [f"[skill:{seg['name']}]" if seg.get("type") == "skill" else seg.get("text", "") for seg in segments]
+    s = "".join(parts)
+    s = re.sub(r"[^\S\n]+", " ", s)
+    s = re.sub(r" ?\n ?", "\n", s)
+    s = re.sub(r"\s*(\[skill:[^\]]+\])\s*", r"\1", s)
+    return s.strip()
+
+
 async def _maybe_generate_title(session_id: str, messages: list, session_manager: SessionManager, model_id: str):
     """在新会话首轮对话后，异步生成标题（fire-and-forget）"""
     try:
@@ -138,8 +161,8 @@ async def legacy():
 @app.post('/api/chat/stream')
 async def chat_stream(chat_request: ChatRequest):
     """SSE 流式聊天接口"""
-    query = chat_request.query
-    if not query or query.strip() == "":
+    segments = _sanitize_segments(chat_request.segments)
+    if segments is None or not _segments_plain_text(segments):
         return ChatResponse(code=401, message="参数不能为空", type="error")
     if not chat_request.model_id:
         return ChatResponse(code=402, message="未指定模型，请先在模型管理中添加并选择模型", type="error")
@@ -147,10 +170,7 @@ async def chat_stream(chat_request: ChatRequest):
     session_id = chat_request.session_id or str(uuid.uuid4())
 
     return StreamingResponse(
-        _stream_events(
-            query, session_id, app.state.session_manager, chat_request.model_id, chat_request.project_id,
-            skills=chat_request.skills, segments=chat_request.segments,
-        ),
+        _stream_events(segments, session_id, app.state.session_manager, chat_request.model_id, chat_request.project_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -161,8 +181,7 @@ async def chat_stream(chat_request: ChatRequest):
 
 
 async def _stream_events(
-    query: str, session_id: str, session_manager: SessionManager, model_id: str, project_id: Optional[str] = None,
-    skills: Optional[list] = None, segments: Optional[list] = None,
+    segments: list, session_id: str, session_manager: SessionManager, model_id: str, project_id: Optional[str] = None,
 ):
     """生成 SSE 事件流"""
     from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
@@ -193,6 +212,9 @@ async def _stream_events(
             project = await ProjectStore.get_project(session.project_id) if session.project_id else None
         set_current_project(project)
 
+        # 纯文本 query 由 segments 派生（记忆检索、标题等只要文字的场景）
+        query = _segments_plain_text(segments)
+
         display_history = await session_manager.load_display_history(session_id)
         ctx_tokens = await session_manager.get_context_tokens(session_id)
 
@@ -212,12 +234,19 @@ async def _stream_events(
 
         # 动态记忆注入 user message（随 query 变化，不碰 system prompt）
         dynamic_block = get_memory_service().get_dynamic_block(query)
-        augmented_query = f"以下为用户原始输入：\n{query}\n\n{dynamic_block}" if dynamic_block else query
 
-        # 显式注入的 skill 前置到 user message（与动态记忆同轨道：模型可见、展示历史保持干净）
-        skill_block = build_skill_injection(skills)
+        # 显式注入的 skill：query 中行内 [skill:名称] 标记 + 完整指令附后（与动态记忆同轨道）
+        skill_names = list(dict.fromkeys(seg["name"] for seg in segments if seg.get("type") == "skill"))
+        skill_block = build_skill_injection(skill_names)
+        marked_query = _mark_segments(segments)
+        
         if skill_block:
-            augmented_query = f"{skill_block}\n\n{augmented_query}"
+            augmented_query = f"{skill_block}\n\n以下为用户原始输入：\n{marked_query}"
+        else:
+            augmented_query = marked_query
+        if dynamic_block:
+            augmented_query += f"\n\n{dynamic_block}"
+
 
         # 构建完整的 API 上下文：system prompt + 已持久化上下文 + 新 query（动态记忆版）
         context_messages = [{"role": "system", "content": system_prompt}]
@@ -226,8 +255,7 @@ async def _stream_events(
 
         # 构建展示消息列表（仅用于持久化和前端展示）
         # user 消息 content 统一为 segments 数组（skill 占位符的位置信息），纯文本按需拼接
-        user_content = _sanitize_segments(segments) or [{"type": "text", "text": query}]
-        display_history.append({"role": "user", "content": user_content})
+        display_history.append({"role": "user", "content": segments})
         display_messages = display_history
 
         # 提前通知前端 session_id

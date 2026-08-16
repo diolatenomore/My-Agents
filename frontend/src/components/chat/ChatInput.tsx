@@ -40,11 +40,9 @@ export default function ChatInput() {
 
   const handleSend = () => {
     if (!canSend) return;
-    const q = value.text;
-    const skills = value.skills;
     const segments = value.segments;
     composerRef.current?.clear();
-    void send(q, skills, segments);
+    void send(segments);
   };
 
   return (

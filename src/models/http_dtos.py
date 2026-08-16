@@ -6,12 +6,10 @@ from src.models.task import Priority
 
 
 class ChatRequest(BaseModel):
-    query: str
+    segments: Optional[List[dict]] = None   # 用户消息分段（text/skill）
     session_id: Optional[str] = None  # 前端传，不传则后端生成
     model_id: Optional[str] = None    # 模型配置 ID，不传则使用默认模型
     project_id: Optional[str] = None  # 项目 ID，仅新会话首条消息时生效（归属后不变）
-    skills: Optional[List[str]] = None        # 用户显式注入的技能名列表（"/" 快捷选择）
-    segments: Optional[List[dict]] = None     # 用户消息的展示分段（含 skill 占位符位置），仅存储透传，不进模型路径
 
 
 class ChatResponse(BaseModel):
