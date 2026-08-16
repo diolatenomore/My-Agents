@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from typing import AsyncGenerator, Optional
 
@@ -14,6 +15,7 @@ from openai import (
 )
 
 from src.agent.prompts import DEFAULT_SYSTEM_PROMPT
+from src.project.models import Project
 from src.config import (
     COMPACTION_BUDGET_OVERFLOW,
     COMPACTION_HEAD_COUNT,
@@ -951,11 +953,21 @@ async def _execute_tool_calls_parallel(
 def _build_system_prompt(
     custom_prompt: Optional[str] = None,
     memory_block: str = "",
+    project: Optional['Project'] = None,
 ) -> str:
-    """构建 system prompt：自定义 > 默认 + 技能目录 + 长期记忆"""
+    """构建 system prompt：自定义 > 默认 + 项目信息 + 技能目录 + 长期记忆"""
     if custom_prompt:
         return custom_prompt
     prompt = DEFAULT_SYSTEM_PROMPT
+    if project is not None:
+        prompt += "\n\n" + (
+            "# 当前项目\n"
+            f"- 项目名称: {project.name}\n"
+            f"- 工作目录: {project.work_dir}\n"
+            "当前会话关联到上述项目。文件操作工具（list_dir/read_file/create_file 等）的相对路径"
+            "和 execute 命令的工作目录均以该工作目录为基准自动解析，"
+            "你可以直接使用相对路径（如 src/main.py）操作项目文件，无需提供绝对路径。"
+        )
     catalog = build_skills_catalog()
     if catalog:
         prompt += "\n\n" + catalog
@@ -984,7 +996,7 @@ def _expand_skill_refs(query: str) -> str:
 
     <SKILL.md 全文>
 
-    [Skill 目录: skills/file-organize]
+    [Skill 目录: <技能目录的绝对路径>]
     [附属文件: references/api.md, scripts/tool.py]
 
     用户指令：帮我整理 D:/work 的文件
@@ -1033,9 +1045,9 @@ def _expand_skill_refs(query: str) -> str:
         parts.append("")
         parts.append(content)
 
-        # Skill 目录元信息
+        # Skill 目录元信息（绝对路径，执行技能脚本时作为 execute 的 cwd）
         parts.append("")
-        parts.append(f"[Skill 目录: skills/{name}]")
+        parts.append(f"[Skill 目录: {os.path.join(loader.skills_dir, name)}（执行脚本时将 execute 的 cwd 设为此路径）]")
 
         # 附属文件清单
         if files:

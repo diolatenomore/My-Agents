@@ -73,13 +73,13 @@ def check_dir_path(dir_path: str):
             return f"ERROR：路径格式不匹配当前平台（当前为 Unix/macOS 平台）"
         if os.sep == '\\' and _is_unix_abs_path(dir_path):
             return f"ERROR：路径格式不匹配当前平台（当前为 Windows 平台）"
-        return "ERROR：路径必须是绝对路径"
+        return f"ERROR：路径{dir_path}必须是绝对路径"
     if '\x00' in dir_path:
         return "ERROR：路径包含非法字符"
 
     normalized = os.path.normpath(dir_path)
     if not normalized:
-        return "ERROR：路径无效"
+        return f"ERROR：路径{dir_path}无效"
 
     # 基于原始路径检查基础名，避免 normpath 解析掉 ..
     original_base = os.path.basename(dir_path.rstrip(os.sep))

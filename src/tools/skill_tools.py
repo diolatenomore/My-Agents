@@ -7,6 +7,7 @@
 """
 
 from typing import Optional
+import os
 
 from pydantic import BaseModel, Field
 
@@ -51,6 +52,8 @@ def load_skill(name: str, resource: Optional[str] = None) -> str:
         content += "\n\n---\n## 附属资源\n"
         for f in files:
             content += f"- {f}\n"
+        skill_dir = os.path.join(loader.skills_dir, name)
+        content += f"\n技能目录: {skill_dir}（附属资源为相对于该目录的路径；执行脚本时请将 execute 的 cwd 设为此绝对路径）"
 
     return content
 

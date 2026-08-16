@@ -51,6 +51,17 @@ export function newSession() {
   useTodoStore.getState().clear();
 }
 
+/** 新建会话并指定归属项目（'' = 普通聊天）：设置归属后清空当前会话状态，首个消息发送时后端才真正创建 */
+export function newSessionInProject(projectId: string) {
+  if (useChatStore.getState().streaming) {
+    toast('info', '正在回复中，请等待完成或先停止');
+    return;
+  }
+  localStorage.setItem('project_id', projectId);
+  useAppStore.setState({ currentProjectId: projectId });
+  newSession();
+}
+
 /** 删除会话（带确认），删除当前会话则回到新会话状态 */
 export async function removeSession(sessionId: string) {
   const ok = await confirmDialog({

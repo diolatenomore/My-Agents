@@ -6,16 +6,31 @@ from src.vfs.diff_table import DiffRecord, OperationType, DiffTable
 from src.vfs.task_context import get_current_task_id, get_staging_area, get_copy_mapping, get_vfs_lock
 from src.utils.vfs import check_file_path, check_dir_path, isfile, isdir, copy
 from src.db.sqlite_pool import db_pool
+from src.project.context import get_current_work_dir
 
 """
 文件操作函数
 只要涉及创建、修改文件/目录，都会放到暂存区
 """
 
-# TODO 后续加上工作目录的概念（传入工作目录路径并拼接？）
+
+def _resolve_path(path: str) -> str:
+    """将相对路径解析到当前项目的工作目录下
+
+    - 绝对路径原样返回
+    - 相对路径：当前协程关联了项目则拼接项目工作目录；无项目时原样返回
+      （由后续 check_* 校验报"路径必须是绝对路径"，与历史行为一致）
+    """
+    if not path or not isinstance(path, str) or os.path.isabs(path):
+        return path
+    work_dir = get_current_work_dir()
+    if work_dir is None:
+        return path
+    return os.path.normpath(os.path.join(work_dir, path))
 
 async def list_dir(source_path: str):
     """列出目录下的所有文件和子目录"""
+    source_path = _resolve_path(source_path)
     # 路径合法性检查
     result = check_dir_path(source_path)
     if result:
@@ -93,6 +108,7 @@ async def list_dir(source_path: str):
 
 async def read_file(path: str):
     """如果暂存区里有该文件，就返回暂存区里的内容，否则返回原文件内容"""
+    path = _resolve_path(path)
     # 检查路径是否存在（真实路径/虚拟路径——是否已删除）
     staging_area = get_staging_area()
     staging_path = staging_area.get_staging_path(path)
@@ -110,6 +126,7 @@ async def read_file(path: str):
 
 
 async def create_file(path: str, content: str):
+    path = _resolve_path(path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -140,6 +157,7 @@ async def create_file(path: str, content: str):
 
 
 async def delete_file(path: str):
+    path = _resolve_path(path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -169,6 +187,8 @@ async def delete_file(path: str):
 
 
 async def rename_file(source_path: str, target_path: str):
+    source_path = _resolve_path(source_path)
+    target_path = _resolve_path(target_path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -231,6 +251,7 @@ async def modify_file(path: str, new_str: str, replace: bool, old_str: str = Non
         replace: 是否使用 SEARCH/REPLACE 模式。True=增量替换，False=全量覆盖
         old_str: SEARCH/REPLACE 模式下要查找替换的原始内容。仅 replace=True 时使用
     """
+    path = _resolve_path(path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -285,6 +306,8 @@ async def modify_file(path: str, new_str: str, replace: bool, old_str: str = Non
 
 
 async def copy_file(source_path: str, target_path: str):
+    source_path = _resolve_path(source_path)
+    target_path = _resolve_path(target_path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -319,6 +342,8 @@ async def copy_file(source_path: str, target_path: str):
 
 
 async def move_file(source_path: str, target_path: str):
+    source_path = _resolve_path(source_path)
+    target_path = _resolve_path(target_path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -359,6 +384,7 @@ async def move_file(source_path: str, target_path: str):
 
 async def mkdir(path: str):
     """为了统一，这里把path作为目标路径"""
+    path = _resolve_path(path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -385,6 +411,7 @@ async def mkdir(path: str):
 
 
 async def delete_dir(path: str):
+    path = _resolve_path(path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -414,6 +441,8 @@ async def delete_dir(path: str):
 
 
 async def rename_dir(source_path: str, target_path: str):
+    source_path = _resolve_path(source_path)
+    target_path = _resolve_path(target_path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -466,6 +495,8 @@ async def rename_dir(source_path: str, target_path: str):
 
 
 async def copy_dir(source_path: str, target_path: str):
+    source_path = _resolve_path(source_path)
+    target_path = _resolve_path(target_path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:
@@ -522,6 +553,8 @@ async def copy_dir(source_path: str, target_path: str):
 
 
 async def move_dir(source_path: str, target_path: str):
+    source_path = _resolve_path(source_path)
+    target_path = _resolve_path(target_path)
     task_id = get_current_task_id()
     async with get_vfs_lock():
         async with db_pool.get_conn() as conn:

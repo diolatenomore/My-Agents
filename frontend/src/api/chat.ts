@@ -5,6 +5,8 @@ export interface ChatStreamBody {
   query: string;
   session_id?: string;
   model_id?: string;
+  /** 仅新会话首条消息时生效（会话归属项目后不再变化） */
+  project_id?: string;
 }
 
 /**

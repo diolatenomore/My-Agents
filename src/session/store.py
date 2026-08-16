@@ -26,19 +26,20 @@ class SessionStore:
                 session_id=row["session_id"],
                 title=row["title"] or "",
                 context_tokens=row["context_tokens"] if "context_tokens" in row.keys() else 0,
+                project_id=row["project_id"] if "project_id" in row.keys() else None,
                 created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(),
                 updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(),
             )
 
     @classmethod
-    async def create_session(cls, session_id: str, title: str = "") -> Session:
+    async def create_session(cls, session_id: str, title: str = "", project_id: Optional[str] = None) -> Session:
         now = datetime.now().isoformat()
         async with db_pool.get_conn() as conn:
             await conn.execute(
-                "INSERT OR IGNORE INTO sessions (session_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (session_id, title, now, now),
+                "INSERT OR IGNORE INTO sessions (session_id, title, project_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, title, project_id, now, now),
             )
-        return Session(session_id=session_id, title=title)
+        return Session(session_id=session_id, title=title, project_id=project_id)
 
     @classmethod
     async def update_title(cls, session_id: str, title: str):
@@ -71,6 +72,7 @@ class SessionStore:
                     session_id=row["session_id"],
                     title=row["title"] or "",
                     context_tokens=row["context_tokens"] if "context_tokens" in row.keys() else 0,
+                    project_id=row["project_id"] if "project_id" in row.keys() else None,
                     created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else datetime.now(),
                     updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else datetime.now(),
                     message_count=row["msg_count"],

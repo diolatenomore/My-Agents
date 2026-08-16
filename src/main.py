@@ -26,7 +26,10 @@ from src.models.http_dtos import (
     UpdateTaskPriorityRequest, GetStatsResponse, TaskManagerStatus,
     UpdateMemoryRequest,
     CreateModelRequest, UpdateModelRequest, ModelConfigDTO,
+    ProjectDTO, ProjectCreateRequest, ProjectUpdateRequest,
 )
+from src.project.store import ProjectStore
+from src.project.context import set_current_project, clear_current_project
 from src.tools.loader import discover_tools
 from src.tools.approval import approval_registry
 from src.agent.react_loop import run_agent_stream
@@ -120,7 +123,7 @@ async def chat_stream(chat_request: ChatRequest):
     session_id = chat_request.session_id or str(uuid.uuid4())
 
     return StreamingResponse(
-        _stream_events(query, session_id, app.state.session_manager, chat_request.model_id),
+        _stream_events(query, session_id, app.state.session_manager, chat_request.model_id, chat_request.project_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -130,7 +133,7 @@ async def chat_stream(chat_request: ChatRequest):
     )
 
 
-async def _stream_events(query: str, session_id: str, session_manager: SessionManager, model_id: str):
+async def _stream_events(query: str, session_id: str, session_manager: SessionManager, model_id: str, project_id: Optional[str] = None):
     """生成 SSE 事件流"""
     from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
     from src.agent.react_loop import _build_messages, _build_system_prompt, _get_memory_block
@@ -146,6 +149,17 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
     try:
         set_current_task_id(session_id)
         await init_vfs(session_id)
+
+        # 确定会话归属的项目：新会话按请求解析（无效则视为普通聊天）；
+        # 已有会话以库中为准，不随请求变化（保证 VFS 暂存区/system prompt 缓存一致）
+        session = await session_manager.get_session(session_id)
+        if session is None:
+            project = await ProjectStore.get_project(project_id) if project_id else None
+            await session_manager.create_session(session_id, project_id=project.project_id if project else None)
+        else:
+            project = await ProjectStore.get_project(session.project_id) if session.project_id else None
+        set_current_project(project)
+
         display_history = await session_manager.load_display_history(session_id)
         ctx_tokens = await session_manager.get_context_tokens(session_id)
 
@@ -160,7 +174,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
             system_prompt = frozen_prompt
         else:
             memory_block = _get_memory_block(query)
-            system_prompt = _build_system_prompt(memory_block=memory_block)
+            system_prompt = _build_system_prompt(memory_block=memory_block, project=project)
             prompt_cache.set(model_id, session_id, system_prompt)
 
         # 动态记忆注入 user message（随 query 变化，不碰 system prompt）
@@ -214,6 +228,7 @@ async def _stream_events(query: str, session_id: str, session_manager: SessionMa
         approval_registry.clear_threshold(session_id)
         await clean_vfs()
         clean_current_task_id()
+        clear_current_project()
         try:
             await session_manager.save_display_messages(session_id, display_messages)
             if last_context_tokens:
@@ -426,6 +441,7 @@ async def list_sessions():
             message_count=s.message_count,
             created_at=s.created_at.isoformat() if hasattr(s.created_at, 'isoformat') else str(s.created_at),
             updated_at=s.updated_at.isoformat() if hasattr(s.updated_at, 'isoformat') else str(s.updated_at),
+            project_id=s.project_id,
         ).model_dump()
         for s in sessions
     ])
@@ -484,6 +500,69 @@ async def get_session_messages(session_id: str = Path(...)):
         "messages": messages,
         "context_tokens": ctx_tokens,
     })
+
+
+# ========== Project 管理 API ==========
+
+def _project_to_dto(p) -> dict:
+    return ProjectDTO(
+        project_id=p.project_id,
+        name=p.name,
+        work_dir=p.work_dir,
+        session_count=p.session_count,
+        created_at=p.created_at.isoformat() if hasattr(p.created_at, 'isoformat') else str(p.created_at),
+        updated_at=p.updated_at.isoformat() if hasattr(p.updated_at, 'isoformat') else str(p.updated_at),
+    ).model_dump()
+
+
+@app.get('/api/projects')
+async def list_projects():
+    """列出所有项目"""
+    projects = await ProjectStore.list_projects()
+    return JSONResponse(content=[_project_to_dto(p) for p in projects])
+
+
+@app.post('/api/projects')
+async def create_project(req: ProjectCreateRequest):
+    """创建项目：name 非空，work_dir 必须是已存在的目录"""
+    name = req.name.strip()
+    if not name:
+        return JSONResponse(content={"code": 400, "message": "项目名称不能为空"}, status_code=400)
+    if len(name) > 50:
+        return JSONResponse(content={"code": 400, "message": "项目名称不能超过50字"}, status_code=400)
+    work_dir = os.path.normpath(os.path.abspath(req.work_dir.strip()))
+    if not os.path.isdir(work_dir):
+        return JSONResponse(content={"code": 400, "message": f"工作目录不存在: {work_dir}"}, status_code=400)
+    project = await ProjectStore.create_project(str(uuid.uuid4()), name, work_dir)
+    return JSONResponse(content=_project_to_dto(project))
+
+
+@app.put('/api/projects/{project_id}')
+async def update_project(req: ProjectUpdateRequest, project_id: str = Path(...)):
+    """更新项目名称/工作目录"""
+    project = await ProjectStore.get_project(project_id)
+    if not project:
+        return JSONResponse(content={"code": 404, "message": "项目不存在"}, status_code=404)
+    name = req.name.strip() if req.name else None
+    if name is not None and not name:
+        return JSONResponse(content={"code": 400, "message": "项目名称不能为空"}, status_code=400)
+    work_dir = None
+    if req.work_dir is not None:
+        work_dir = os.path.normpath(os.path.abspath(req.work_dir.strip()))
+        if not os.path.isdir(work_dir):
+            return JSONResponse(content={"code": 400, "message": f"工作目录不存在: {work_dir}"}, status_code=400)
+    await ProjectStore.update_project(project_id, name=name, work_dir=work_dir)
+    return JSONResponse(content=_project_to_dto(await ProjectStore.get_project(project_id)))
+
+
+@app.delete('/api/projects/{project_id}')
+async def delete_project(project_id: str = Path(...)):
+    """删除项目（归属会话保留，project_id 置空）"""
+    project = await ProjectStore.get_project(project_id)
+    if not project:
+        return JSONResponse(content={"code": 404, "message": "项目不存在"}, status_code=404)
+    await ProjectStore.delete_project(project_id)
+    return JSONResponse(content={"code": 200, "message": f"项目 {project.name} 已删除"})
 
 
 # ========== 记忆管理 API ==========

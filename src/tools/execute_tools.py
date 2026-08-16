@@ -5,20 +5,13 @@
 """
 
 import asyncio
-import os
 import sys
-from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
 
 from src.tools.registry import registry
-
-# 项目根目录，用于解析相对 cwd（无论进程从哪启动，. 始终 = 项目根）
-_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
-# 确保是目錄
-if not os.path.isdir(_PROJECT_ROOT):
-    raise RuntimeError(f"项目根目录不存在: {_PROJECT_ROOT}")
+from src.project.context import get_current_work_dir
 
 
 class ExecuteInput(BaseModel):
@@ -29,10 +22,12 @@ class ExecuteInput(BaseModel):
             "如需 PowerShell 命令请使用 powershell -Command \"...\"。"
         )
     )
-    cwd: str = Field(
-        default=".",
+    cwd: Optional[str] = Field(
+        default=None,
         description=(
-            "命令的工作目录。执行 skill 脚本时，应设为 skills/<skill-name>，如 'skills/file-organize'"
+            "命令的工作目录，必须传入绝对路径。"
+            "不传则默认为当前项目的工作目录；"
+            "执行技能自带脚本时，请将 cwd 设为 load_skill 返回的技能目录绝对路径"
         ),
     )
     timeout: int = Field(
@@ -41,16 +36,6 @@ class ExecuteInput(BaseModel):
             "命令超时秒数。请根据任务类型估算，上限为600秒。"
         ),
     )
-
-
-def _resolve_cwd(cwd: str) -> str:
-    """将相对 cwd 解析为绝对路径（相对于项目根目录）"""
-    if os.path.isabs(cwd):
-        return cwd
-    resolved = os.path.normpath(os.path.join(_PROJECT_ROOT, cwd))
-    if not os.path.isdir(resolved):
-        return resolved  # 目录不存在也返回，让 subprocess 报错
-    return resolved
 
 
 def _format_output(stdout: bytes, stderr: bytes) -> str:
@@ -78,7 +63,7 @@ def _format_output(stdout: bytes, stderr: bytes) -> str:
 
 async def execute(
     command: str,
-    cwd: str = ".",
+    cwd: Optional[str] = None,
     timeout: int = 60,
     _cancel_event: Optional[asyncio.Event] = None,
 ) -> str:
@@ -102,8 +87,9 @@ async def execute(
         os_name="Windows" if sys.platform == "win32" else "macOS/Linux",
         shell_name="cmd.exe" if sys.platform == "win32" else "bash/sh",
     )
-    # cwd 的相对路径始终相对于项目根目录解析，不依赖进程的当前工作目录。
-    cwd = _resolve_cwd(cwd)
+    # 模型未传入 cwd 时，回退到当前项目的工作目录
+    if cwd is None:
+        cwd = get_current_work_dir() or "."
     timeout = max(timeout, 5)
     timeout = min(timeout, 600)  # 硬上限 600 秒，防止 LLM 传离谱值
     try:
@@ -169,9 +155,9 @@ registry.register(
     name="execute",
     description=(
         f"在终端中执行 shell 命令（当前平台：{_current_os}）。"
-        "用于运行 skill 附带的脚本（scripts/ 目录）、"
-        "安装依赖（pip install）、调用外部 CLI（curl、jq、python 等）。"
-        "执行 skill 脚本时，请将 cwd 设为 skills/<skill-name>。"
+        "用于运行 skill 附带的脚本、安装依赖（pip install）、"
+        "调用外部 CLI（curl、jq、python 等）。"
+        "cwd 必须传入绝对路径，执行 skill 脚本时请使用 load_skill 返回的技能目录绝对路径。"
     ),
     handler=execute,
     args_schema=ExecuteInput,

@@ -12,24 +12,24 @@ from src.tools.registry import registry
 # ============ 输入模型 ============
 
 class ListDirInput(BaseModel):
-    source_path: str = Field(description="要查看的目录的绝对路径")
+    source_path: str = Field(description="要查看的目录的绝对路径或者相对于项目工作目录的相对路径")
 
 class ReadFileInput(BaseModel):
-    path: str = Field(description="要读取的文件的绝对路径")
+    path: str = Field(description="要读取的文件的绝对路径或者相对于项目工作目录的相对路径")
 
 class CreateFileInput(BaseModel):
-    path: str = Field(description="要创建的文件的绝对路径")
+    path: str = Field(description="要创建的文件的绝对路径或者相对于项目工作目录的相对路径")
     content: str = Field(description="要写入文件的内容")
 
 class DeleteFileInput(BaseModel):
-    path: str = Field(description="要删除的文件的绝对路径")
+    path: str = Field(description="要删除的文件的绝对路径或者相对于项目工作目录的相对路径")
 
 class RenameFileInput(BaseModel):
-    source_path: str = Field(description="要重命名的旧文件的绝对路径")
-    target_path: str = Field(description="要重命名的新文件的绝对路径")
+    source_path: str = Field(description="要重命名的旧文件的绝对路径或者相对于项目工作目录的相对路径")
+    target_path: str = Field(description="要重命名的新文件的绝对路径或者相对于项目工作目录的相对路径")
 
 class ModifyFileInput(BaseModel):
-    path: str = Field(description="要修改的文件的绝对路径")
+    path: str = Field(description="要修改的文件的绝对路径或者相对于项目工作目录的相对路径")
     new_str: str = Field(description="要写入文件的内容")
     replace: bool = Field(description="是否使用 SEARCH/REPLACE 模式。True=增量替换，False=全量覆盖")
     old_str: str = Field(description="SEARCH/REPLACE 模式下要查找替换的原始内容。仅 replace=True 时使用")
@@ -37,30 +37,30 @@ class ModifyFileInput(BaseModel):
 
 
 class CopyFileInput(BaseModel):
-    source_path: str = Field(description="要复制的源文件的绝对路径")
-    target_path: str = Field(description="源文件要被复制到的目标绝对路径")
+    source_path: str = Field(description="要复制的源文件的绝对路径或者相对于项目工作目录的相对路径")
+    target_path: str = Field(description="源文件要被复制到的目标绝对路径或者相对于项目工作目录的相对路径")
 
 class MoveFileInput(BaseModel):
-    source_path: str = Field(description="要移动的源文件的绝对路径")
-    target_path: str = Field(description="源文件要被移动到的目标绝对路径")
+    source_path: str = Field(description="要移动的源文件的绝对路径或者相对于项目工作目录的相对路径")
+    target_path: str = Field(description="源文件要被移动到的目标绝对路径或者相对于项目工作目录的相对路径")
 
 class MkdirInput(BaseModel):
-    path: str = Field(description="要创建的目录的绝对路径")
+    path: str = Field(description="要创建的目录的绝对路径或者相对于项目工作目录的相对路径")
 
 class DeleteDirInput(BaseModel):
-    path: str = Field(description="要删除的目录的绝对路径")
+    path: str = Field(description="要删除的目录的绝对路径或者相对于项目工作目录的相对路径")
 
 class RenameDirInput(BaseModel):
-    source_path: str = Field(description="要重命名的旧目录的绝对路径")
-    target_path: str = Field(description="要重命名的新目录的绝对路径")
+    source_path: str = Field(description="要重命名的旧目录的绝对路径或者相对于项目工作目录的相对路径")
+    target_path: str = Field(description="要重命名的新目录的绝对路径或者相对于项目工作目录的相对路径")
 
 class CopyDirInput(BaseModel):
-    source_path: str = Field(description="要复制的源目录的绝对路径")
-    target_path: str = Field(description="源目录要被复制到的目标绝对路径")
+    source_path: str = Field(description="要复制的源目录的绝对路径或者相对于项目工作目录的相对路径")
+    target_path: str = Field(description="源目录要被复制到的目标绝对路径或者相对于项目工作目录的相对路径")
 
 class MoveDirInput(BaseModel):
-    source_path: str = Field(description="要移动的源目录的绝对路径")
-    target_path: str = Field(description="源目录要被移动到的目标绝对路径")
+    source_path: str = Field(description="要移动的源目录的绝对路径或者相对于项目工作目录的相对路径")
+    target_path: str = Field(description="源目录要被移动到的目标绝对路径或者相对于项目工作目录的相对路径")
 
 # ============ 注册工具 ============
 

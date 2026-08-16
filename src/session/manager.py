@@ -29,6 +29,9 @@ class SessionManager:
     async def get_session(self, session_id: str) -> Optional[Session]:
         return await self.store.get_session(session_id)
 
+    async def create_session(self, session_id: str, title: str = "", project_id: Optional[str] = None) -> Session:
+        return await self.store.create_session(session_id, title, project_id)
+
     async def delete(self, session_id: str):
         await self.store.delete_session(session_id)
 

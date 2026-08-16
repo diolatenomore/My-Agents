@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional
 
 
 @dataclass
@@ -10,6 +11,7 @@ class Session:
     session_id: str
     title: str = ""
     context_tokens: int = 0
+    project_id: Optional[str] = None  # 归属项目，None = 普通聊天
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     message_count: int = 0

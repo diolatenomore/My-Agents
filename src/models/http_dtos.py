@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     query: str
     session_id: Optional[str] = None  # 前端传，不传则后端生成
     model_id: Optional[str] = None  # 模型配置 ID，不传则使用默认模型
+    project_id: Optional[str] = None  # 项目 ID，仅新会话首条消息时生效（归属后不变）
 
 
 class ChatResponse(BaseModel):
@@ -25,6 +26,28 @@ class SessionDTO(BaseModel):
     message_count: int = 0
     created_at: str = ""
     updated_at: str = ""
+    project_id: Optional[str] = None
+
+
+# ========== 项目 DTO ==========
+
+class ProjectDTO(BaseModel):
+    project_id: str
+    name: str
+    work_dir: str
+    session_count: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(..., description="项目名称")
+    work_dir: str = Field(..., description="工作目录的绝对路径")
+
+
+class ProjectUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    work_dir: Optional[str] = None
 
 
 class GetTaskStatusResponse(BaseModel):

@@ -298,6 +298,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             query,
             session_id: app.currentSessionId || undefined,
             model_id: app.selectedModelId || undefined,
+            project_id: app.currentProjectId || undefined,
           },
           ev => applyEvent(turnId, ev),
           controller.signal,

@@ -108,6 +108,23 @@ async def init_db():
             await conn.execute("ALTER TABLE sessions ADD COLUMN context_tokens INTEGER DEFAULT 0")
         except Exception:
             pass  # 列已存在则跳过
+        # 迁移：为已有 sessions 表增加 project_id 列（会话归属的项目，NULL = 普通聊天）
+        try:
+            await conn.execute("ALTER TABLE sessions ADD COLUMN project_id TEXT")
+        except Exception:
+            pass  # 列已存在则跳过
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id)")
+
+        # 项目管理表（Project = 命名的工作目录）
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                project_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                work_dir TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS session_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

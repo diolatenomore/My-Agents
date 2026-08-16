@@ -13,6 +13,23 @@ export interface SessionDTO {
   message_count: number;
   created_at: string;
   updated_at: string;
+  project_id?: string | null;
+}
+
+// ===== 项目 =====
+
+export interface ProjectDTO {
+  project_id: string;
+  name: string;
+  work_dir: string;
+  session_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectFormValues {
+  name: string;
+  work_dir: string;
 }
 
 export interface ToolCallRecord {
