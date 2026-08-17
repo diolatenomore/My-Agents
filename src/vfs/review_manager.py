@@ -342,39 +342,39 @@ class ReviewManager:
     @staticmethod
     async def _apply_operation(op_type: str, source: str, target: str):
         """执行真实文件系统操作"""
-        # TODO 待确认
         try:
             if op_type == 'MKDIR':
                 logger.info(f"[APPLY] MKDIR: {source}")
-                # os.makedirs(source, exist_ok=True)
+                os.makedirs(source, exist_ok=True)
             elif op_type == 'CREATE_FILE':
                 logger.info(f"[APPLY] CREATE_FILE: {source}")
-                # staging_path = ReviewManager._resolve_staging_path(source)
-                # if staging_path and os.path.exists(staging_path):
-                #     os.makedirs(os.path.dirname(source), exist_ok=True)
-                #     shutil.copy(staging_path, source)
+                staging_path = ReviewManager._resolve_staging_path(source)
+                if staging_path and os.path.exists(staging_path):
+                    os.makedirs(os.path.dirname(source), exist_ok=True)
+                    shutil.copy(staging_path, source)
             elif op_type == 'MODIFY_FILE':
                 logger.info(f"[APPLY] MODIFY_FILE: {source}")
-                # staging_path = ReviewManager._resolve_staging_path(source)
-                # if staging_path and os.path.exists(staging_path):
-                #     shutil.copy(staging_path, source)
+                staging_path = ReviewManager._resolve_staging_path(source)
+                if staging_path and os.path.exists(staging_path):
+                    shutil.copy(staging_path, source)
             elif op_type == 'DELETE_FILE':
                 logger.info(f"[APPLY] DELETE_FILE: {source}")
-                # if os.path.exists(source):
-                #     os.remove(source)
+                if os.path.exists(source):
+                    os.remove(source)
             elif op_type == 'RENAME_FILE':
                 logger.info(f"[APPLY] RENAME_FILE: {source} -> {target}")
-                # if os.path.exists(source):
-                #     os.makedirs(os.path.dirname(target), exist_ok=True)
-                #     os.rename(source, target)
+                if os.path.exists(source):
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    os.rename(source, target)
             elif op_type == 'DELETE_DIR':
                 logger.info(f"[APPLY] DELETE_DIR: {source}")
-                # if os.path.exists(source):
-                #     shutil.rmtree(source)
+                if os.path.exists(source):
+                    shutil.rmtree(source)
             elif op_type == 'RENAME_DIR':
                 logger.info(f"[APPLY] RENAME_DIR: {source} -> {target}")
-                # if os.path.exists(source):
-                #     os.rename(source, target)
+                if os.path.exists(source):
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    os.rename(source, target)
         except Exception as e:
             logger.error(f"执行真实文件操作失败 [{op_type} {source}]: {e}")
 

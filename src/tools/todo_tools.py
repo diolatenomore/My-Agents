@@ -1,4 +1,4 @@
-"""TODO 任务管理工具 — 支持 Plan-and-Execute 模式
+"""Todo 任务管理工具 — 支持 Plan-and-Execute 模式
 
 提供 todo 工具让 LLM 在执行复杂任务前先规划，在执行过程中追踪进度。
 TodoStore 为纯内存存储，通过对话历史间接持久化。
@@ -14,7 +14,7 @@ from src.tools.registry import registry
 # ========== 数据模型 ==========
 
 class TodoItem(BaseModel):
-    """单条 TODO 项"""
+    """单条 Todo 项"""
     id: str = Field(description="唯一标识符，如 'task-1'、'task-2'")
     content: str = Field(description="任务描述，一句话概括。")
     status: str = Field(
@@ -111,7 +111,7 @@ async def _handle_todo(
     """
     if _todo_store is None:
         return json.dumps(
-            {"error": "TODO store 不可用，子智能体不支持任务规划"},
+            {"error": "TodoStore 不可用，子智能体不支持任务规划"},
             ensure_ascii=False,
         )
 
