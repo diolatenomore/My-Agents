@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import re
 import sys
 from typing import Optional
 
@@ -12,6 +13,43 @@ from pydantic import BaseModel, Field
 
 from src.tools.registry import registry
 from src.project.context import get_current_work_dir
+
+# 文件操作命令模式：拦截绕过 VFS 直接操作文件系统的命令
+_FILE_OP_PATTERNS = [
+    # 列出目录
+    (r'^\s*ls\s', 'list_dir'),
+    (r'^\s*dir\s', 'list_dir'),
+    # 删除
+    (r'^\s*rm\s', 'delete_file / delete_dir'),
+    (r'^\s*del\s', 'delete_file'),
+    (r'^\s*erase\s', 'delete_file'),
+    (r'^\s*rmdir\s', 'delete_dir'),
+    (r'^\s*rd\s', 'delete_dir'),
+    # 移动/重命名
+    (r'^\s*mv\s', 'move_file / move_dir / rename_file / rename_dir'),
+    (r'^\s*move\s', 'move_file / move_dir'),
+    (r'^\s*rename\s', 'rename_file'),
+    (r'^\s*ren\s', 'rename_file'),
+    # 复制
+    (r'^\s*cp\s', 'copy_file / copy_dir'),
+    (r'^\s*copy\s', 'copy_file'),
+    (r'^\s*xcopy\s', 'copy_dir'),
+    (r'^\s*robocopy\s', 'copy_dir'),
+    # 创建目录/文件
+    (r'^\s*mkdir\s', 'mkdir'),
+    (r'^\s*md\s', 'mkdir'),
+    (r'^\s*touch\s', 'create_file'),
+]
+
+
+def _validate_command(command: str) -> Optional[str]:
+    """校验命令是否绕过 VFS 进行文件操作。返回 None 表示通过，返回字符串为拦截原因。"""
+    for pattern, vfs_alternative in _FILE_OP_PATTERNS:
+        if re.search(pattern, command):
+            return (
+                f"命令被拦截，检测到文件系统操作，建议使用 {vfs_alternative} 代替。被拦截的命令: {command[:200]}"
+            )
+    return None
 
 
 class ExecuteInput(BaseModel):
@@ -87,6 +125,11 @@ async def execute(
         os_name="Windows" if sys.platform == "win32" else "macOS/Linux",
         shell_name="cmd.exe" if sys.platform == "win32" else "bash/sh",
     )
+    # 拦截绕过 VFS 的文件操作命令
+    blocked = _validate_command(command)
+    if blocked:
+        return blocked
+
     # 模型未传入 cwd 时，回退到当前项目的工作目录
     if cwd is None:
         cwd = get_current_work_dir() or "."
@@ -158,6 +201,8 @@ registry.register(
         "用于运行 skill 附带的脚本、安装依赖（pip install）、"
         "调用外部 CLI（curl、jq、python 等）。"
         "cwd 必须传入绝对路径，执行 skill 脚本时请使用 load_skill 返回的技能目录绝对路径。"
+        "\n注意：涉及文件系统操作（创建/删除/移动/...）请使用专用的工具，"
+        "不要通过 execute 执行 rm、mv、cp、mkdir、del 等等命令。"
     ),
     handler=execute,
     args_schema=ExecuteInput,
