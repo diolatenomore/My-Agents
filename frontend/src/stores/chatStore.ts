@@ -224,10 +224,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       case 'tool_result': {
         mutateTurn(turnId, t => {
           const blocks = [...t.blocks];
-          // 从后往前找同名且尚无结果的工具块，把结果挂上去
+          // 按 tool_call_id 精确匹配
           for (let i = blocks.length - 1; i >= 0; i--) {
             const b = blocks[i];
-            if (b.kind === 'tool' && b.name === ev.name && b.result === undefined) {
+            if (b.kind === 'tool' && b.toolCallId === ev.tool_call_id) {
               blocks[i] = { ...b, result: ev.result, status: 'done' };
               return { ...t, blocks };
             }
@@ -237,6 +237,7 @@ export const useChatStore = create<ChatState>((set, get) => {
             id: uid(),
             name: ev.name,
             args: {},
+            toolCallId: ev.tool_call_id,
             status: 'done',
             result: ev.result,
           });

@@ -190,7 +190,7 @@ export type StreamEvent =
       current_iterations: number;
       max_iterations: number;
     }
-  | { type: 'tool_result'; name: string; result: string }
+  | { type: 'tool_result'; name: string; result: string; tool_call_id?: string }
   | {
       type: 'done';
       content?: string;

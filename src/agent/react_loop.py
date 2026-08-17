@@ -911,7 +911,7 @@ async def _execute_tool_calls_parallel(
             continue
 
         results[index] = result
-        yield {"type": "tool_result", "name": tc["name"], "result": result}
+        yield {"type": "tool_result", "name": tc["name"], "result": result, "tool_call_id": tc["id"]}
 
     # 取消未完成的 task
     for task in tasks:
@@ -922,7 +922,7 @@ async def _execute_tool_calls_parallel(
     for i, tc in enumerate(tool_calls):
         if i not in results:
             results[i] = "用户中断了对话"
-            yield {"type": "tool_result", "name": tc["name"], "result": results[i]}
+            yield {"type": "tool_result", "name": tc["name"], "result": results[i], "tool_call_id": tc["id"]}
 
     # 按原始顺序返回 results（供调用者构造 messages）
     yield {
