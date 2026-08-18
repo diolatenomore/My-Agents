@@ -168,6 +168,20 @@ export interface ReviewTree {
   items: ReviewItem[];
 }
 
+export interface ReviewDiffLine {
+  type: 'same' | 'add' | 'del';
+  text: string;
+}
+
+export interface ReviewContent {
+  op_type: VfsOpType;
+  source: string;
+  target: string;
+  before: string;
+  after: string;
+  diff: ReviewDiffLine[] | null;
+}
+
 // ===== SSE 流式事件（POST /api/chat/stream）=====
 
 export type StreamEvent =

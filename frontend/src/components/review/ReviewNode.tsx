@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import {
   Check,
+  Eye,
   FileMinus2,
   FilePenLine,
   FilePlus2,
@@ -12,6 +14,7 @@ import {
 } from 'lucide-react';
 import type { ReviewItem, VfsOpType } from '../../types';
 import { useReviewStore } from '../../stores/reviewStore';
+import ReviewContentModal from './ReviewContentModal';
 
 const OP_META: Record<VfsOpType, { label: string; icon: LucideIcon; tone: string }> = {
   MKDIR: { label: '创建目录', icon: FolderPlus, tone: 'text-sky-500' },
@@ -23,10 +26,14 @@ const OP_META: Record<VfsOpType, { label: string; icon: LucideIcon; tone: string
   RENAME_FILE: { label: '重命名文件', icon: FileSymlink, tone: 'text-amber-500' },
 };
 
+const CONTENT_OPS: VfsOpType[] = ['CREATE_FILE', 'MODIFY_FILE', 'DELETE_FILE'];
+
 export default function ReviewNode({ node, depth }: { node: ReviewItem; depth: number }) {
   const decideItem = useReviewStore(s => s.decideItem);
+  const [viewing, setViewing] = useState(false);
   const meta = OP_META[node.op_type] ?? { label: node.op_type, icon: FilePenLine, tone: 'text-zinc-400' };
   const Icon = meta.icon;
+  const canView = CONTENT_OPS.includes(node.op_type);
 
   return (
     <>
@@ -53,6 +60,15 @@ export default function ReviewNode({ node, depth }: { node: ReviewItem; depth: n
           </div>
         </div>
         <span className="flex shrink-0 items-center gap-1">
+          {canView && (
+            <button
+              className="icon-btn h-6 w-6 hover:text-sky-600"
+              title="查看内容"
+              onClick={() => setViewing(true)}
+            >
+              <Eye size={13} />
+            </button>
+          )}
           <button
             className="icon-btn h-6 w-6 hover:text-emerald-600"
             title="通过"
@@ -72,6 +88,7 @@ export default function ReviewNode({ node, depth }: { node: ReviewItem; depth: n
       {node.children?.map(child => (
         <ReviewNode key={child.id} node={child} depth={depth + 1} />
       ))}
+      {viewing && <ReviewContentModal item={node} onClose={() => setViewing(false)} />}
     </>
   );
 }

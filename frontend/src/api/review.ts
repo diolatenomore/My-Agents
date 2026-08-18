@@ -1,5 +1,5 @@
 import { apiFetch } from './client';
-import type { ReviewTree } from '../types';
+import type { ReviewTree, ReviewContent } from '../types';
 
 export function getReviewTree(
   taskId: string,
@@ -22,4 +22,11 @@ export function reviewItem(
   return apiFetch(`/api/vfs/review/${taskId}/item/${itemId}?approved=${approved}`, {
     method: 'POST',
   });
+}
+
+export function getReviewItemContent(
+  taskId: string,
+  itemId: string,
+): Promise<{ code: number; message: string; content: ReviewContent | null }> {
+  return apiFetch(`/api/vfs/review/${taskId}/item/${itemId}/content`);
 }
