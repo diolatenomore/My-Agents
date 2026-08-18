@@ -203,34 +203,6 @@ class ToolRegistry:
             logger.error(f"工具 '{name}' 执行失败: {e}", exc_info=True)
             return f"工具 '{name}' 执行失败: {str(e)}"
 
-    def to_langchain_tool(self, name: str):
-        """将已注册的工具包装为 LangChain BaseTool（用于 deepagents 等兼容）"""
-        from langchain_core.tools import BaseTool as LangChainBaseTool
-
-        entry = self.get(name)
-        if not entry:
-            raise ValueError(f"工具 '{name}' 未注册")
-
-        handler = entry.handler
-        is_async = inspect.iscoroutinefunction(handler)
-
-        class _Adapter(LangChainBaseTool):
-            name: str = entry.name
-            description: str = entry.description
-
-            def _run(self, **kwargs) -> str:
-                return handler(**kwargs)
-
-            async def _arun(self, **kwargs) -> str:
-                if is_async:
-                    return await handler(**kwargs)
-                return handler(**kwargs)
-
-        return _Adapter()
-
-    def to_langchain_list(self, names: List[str]) -> List:
-        """批量转 LangChain BaseTool"""
-        return [self.to_langchain_tool(n) for n in names]
 
 
 # 全局单例
