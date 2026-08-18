@@ -267,7 +267,7 @@ async def modify_file(path: str, new_str: str, replace: bool, old_str: str = Non
                     return f"ERROR：文件{path}不存在"
                 # 从暂存区获取一条路径，并拷贝原文件
                 staging_path = await staging_area.register(path, _conn=conn)
-                copy(path, staging_path)  # TODO 中断时会与事务冲突吗？
+                copy(path, staging_path)
 
             # 检查文件是否需要拷贝到暂存区
             copy_mapping = get_copy_mapping()

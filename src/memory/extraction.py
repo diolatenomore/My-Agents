@@ -69,7 +69,6 @@ async def extract_memories(messages: list[dict], model_id: str) -> list[dict]:
             ],
             temperature=0.0,
         )
-        # TODO 输出不为json格式怎么办？
         return _parse_json(result.choices[0].message.content)
     except Exception as e:
         logger.warning(f"记忆提取 LLM 调用失败: {e}")

@@ -56,7 +56,6 @@ class DiffRecord:
     source_path: Optional[str] = None  # 原文件路径
     target_path: Optional[str] = None  # 目标路径
     step: int = 0  # 在任务中的步数，可用于回撤
-    # TODO step怎么记录
     created_at: str = field(default_factory=lambda: str(datetime.now().strftime("%Y-%m-%d %H:%M:%S")))  # 创建时间
 
     def to_dict(self) -> dict:

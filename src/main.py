@@ -23,8 +23,6 @@ from src.db.init_db import init_db
 from src.utils.common import logger
 from src.models.http_dtos import (
     ChatRequest, ChatResponse, SessionDTO,
-    GetTaskStatusResponse, TaskChangeResponse,
-    UpdateTaskPriorityRequest, GetStatsResponse, TaskManagerStatus,
     UpdateMemoryRequest,
     CreateModelRequest, UpdateModelRequest, ModelConfigDTO,
     ProjectDTO, ProjectCreateRequest, ProjectUpdateRequest,
@@ -420,99 +418,6 @@ async def decide_tool(
                 "new_threshold_raise": approval_registry.get_threshold_raise(session_id),
             })
     return JSONResponse(content={"code": 200, "message": "已通过" if approved else "已拒绝"})
-
-
-# ---- 旧版任务 API（保留向后兼容） ----
-
-@app.get('/api/tasks/{task_id}', response_model=GetTaskStatusResponse)
-async def get_task_status(request: Request, task_id: str = Path(...)):
-    """获取任务状态"""
-    try:
-        task_manager = request.app.state.task_manager
-        status = task_manager.get_task_status(task_id)
-        result = task_manager.get_result(task_id)
-
-        return GetTaskStatusResponse(
-            code=200,
-            status=status,
-            result=result
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f'获取任务状态失败: {str(e)}')
-
-
-@app.post('/api/tasks/{task_id}/pause', response_model=TaskChangeResponse)
-async def pause_task(request: Request, task_id: str = Path(...)):
-    """暂停任务"""
-    try:
-        result = request.app.state.task_manager.pause_task(task_id)
-        return TaskChangeResponse(
-            code=200,
-            message=result
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f'暂停任务失败: {str(e)}')
-
-
-@app.post('/api/tasks/{task_id}/resume', response_model=TaskChangeResponse)
-async def resume_task(request: Request, task_id: str = Path(...)):
-    """恢复任务"""
-    try:
-        result = request.app.state.task_manager.resume_task(task_id)
-        return TaskChangeResponse(
-            code=200,
-            message=result
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f'恢复任务失败: {str(e)}')
-
-
-@app.delete('/api/tasks/{task_id}', response_model=TaskChangeResponse)
-async def delete_task(request: Request, task_id: str = Path(...)):
-    """删除任务"""
-    try:
-        result = request.app.state.task_manager.delete_task(task_id)
-        return TaskChangeResponse(
-            code=200,
-            message=result
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f'删除任务失败: {str(e)}')
-
-
-@app.put('/api/tasks/{task_id}/priority', response_model=TaskChangeResponse)
-async def update_task_priority(request: Request, priority_data: UpdateTaskPriorityRequest, task_id: str = Path(...)):
-    """更新任务优先级"""
-    try:
-        priority = priority_data.priority
-        result = request.app.state.task_manager.change_priority(task_id, priority)
-        return TaskChangeResponse(
-            code=200,
-            message=result
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f'更新任务优先级失败: {str(e)}')
-
-
-@app.get('/api/stats', response_model=GetStatsResponse)
-async def get_stats(request: Request):
-    """获取系统状态"""
-    try:
-        task_manager = request.app.state.task_manager
-        data = {
-            'running': task_manager.running,
-            'max_workers': task_manager.max_workers,
-            'pending_tasks': len(task_manager.pending_queue),
-            'paused_tasks': len(task_manager.paused_queue),
-            'active_workers': len(task_manager.workers)
-        }
-        return GetStatsResponse(
-            code=200,
-            data=TaskManagerStatus(**data)
-        )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f'获取系统状态失败: {str(e)}')
-
 
 # ========== Session 管理 API ==========
 
