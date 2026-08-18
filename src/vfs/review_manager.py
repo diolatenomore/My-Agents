@@ -6,6 +6,7 @@
 3. 处理审批（通过/拒绝），清理 VFS 状态
 """
 
+import difflib
 import os
 import shutil
 import uuid
@@ -174,6 +175,107 @@ class ReviewManager:
                     parent.setdefault('children', []).append(item)
 
         return {'task_id': task_id, 'items': root_items}
+
+    @staticmethod
+    async def get_item_content(task_id: str, item_id: str) -> Optional[dict]:
+        """
+        读取审批项的文件内容（before/after + diff），供前端预览。
+
+        由于 VFS 采用「审批通过后才写盘」机制，审批前：
+          - 真实磁盘文件 = 变更前内容（before）
+          - 暂存区文件   = 变更后内容（after）
+        """
+        try:
+            async with db_pool.get_conn() as conn:
+                cursor = await conn.execute(
+                    "SELECT op_type, source, target, copy_source FROM review_items WHERE id = ?",
+                    (item_id,),
+                )
+                row = await cursor.fetchone()
+        except Exception as e:
+            logger.error(f"查询审批项失败: {e}")
+            return None
+        if not row:
+            return None
+
+        op_type = row['op_type']
+        source = row['source']
+        target = row['target'] or ''
+        copy_source = row['copy_source'] or ''
+
+        # 目录/重命名操作不涉及内容，返回空补丁
+        if op_type not in ('CREATE_FILE', 'MODIFY_FILE', 'DELETE_FILE'):
+            return {
+                'op_type': op_type,
+                'source': source,
+                'target': target,
+                'before': '',
+                'after': '',
+                'diff': None,
+            }
+
+        staging_area = get_staging_area()
+
+        def _read_staging(path: str) -> Optional[str]:
+            sp = staging_area.get_staging_path(path)
+            if not sp:
+                return None
+            return ReviewManager._read_text(sp)
+
+        before = ''
+        after = ''
+
+        if op_type == 'CREATE_FILE':
+            # 新建：暂存区有内容则用；copy/move 场景下暂存区尚未落盘，回退读原始来源
+            after = _read_staging(source) or ReviewManager._read_text(copy_source) or ''
+        elif op_type == 'MODIFY_FILE':
+            after = _read_staging(source) or ReviewManager._read_text(copy_source) or ''
+            before = ReviewManager._read_text(source) or ReviewManager._read_text(copy_source) or ''
+        elif op_type == 'DELETE_FILE':
+            before = _read_staging(source) or ReviewManager._read_text(source) or ReviewManager._read_text(copy_source) or ''
+
+        diff = None
+        if op_type == 'MODIFY_FILE':
+            diff = ReviewManager._line_diff(before, after)
+
+        return {
+            'op_type': op_type,
+            'source': source,
+            'target': target,
+            'before': before,
+            'after': after,
+            'diff': diff,
+        }
+
+    @staticmethod
+    def _read_text(path: str) -> Optional[str]:
+        """安全读取文本文件内容，非文本或读取失败返回 None"""
+        try:
+            if path and os.path.isfile(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    return f.read()
+        except (UnicodeDecodeError, OSError, ValueError):
+            pass
+        return None
+
+    @staticmethod
+    def _line_diff(before: str, after: str) -> list:
+        """基于行生成结构化 diff，供前端高亮展示"""
+        result = []
+        before_lines = before.splitlines()
+        after_lines = after.splitlines()
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+                None, before_lines, after_lines).get_opcodes():
+            if tag == 'equal':
+                result.extend({'type': 'same', 'text': line} for line in before_lines[i1:i2])
+            elif tag == 'delete':
+                result.extend({'type': 'del', 'text': line} for line in before_lines[i1:i2])
+            elif tag == 'insert':
+                result.extend({'type': 'add', 'text': line} for line in after_lines[j1:j2])
+            elif tag == 'replace':
+                result.extend({'type': 'del', 'text': line} for line in before_lines[i1:i2])
+                result.extend({'type': 'add', 'text': line} for line in after_lines[j1:j2])
+        return result
 
     @staticmethod
     async def process_review(task_id: str, approved: bool):

@@ -374,6 +374,23 @@ async def process_review_item(task_id: str = Path(...), item_id: str = Path(...)
     return JSONResponse({"code": 200, "message": "ok"})
 
 
+@app.get('/api/vfs/review/{task_id}/item/{item_id}/content')
+async def get_review_item_content(task_id: str = Path(...), item_id: str = Path(...)):
+    """读取审批项的补丁内容（before/after + diff），供前端预览"""
+    from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
+    from src.vfs.review_manager import ReviewManager
+    set_current_task_id(task_id)
+    await init_vfs(task_id)
+    try:
+        content = await ReviewManager.get_item_content(task_id, item_id)
+    finally:
+        await clean_vfs()
+        clean_current_task_id()
+    if content is None:
+        return JSONResponse({"code": 404, "message": "审批项不存在", "content": None})
+    return JSONResponse({"code": 200, "message": "ok", "content": content})
+
+
 # ---- 工具审批接口 ----
 
 @app.post('/api/tools/decide/{session_id}/{tool_call_id}')
