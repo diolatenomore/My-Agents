@@ -172,22 +172,24 @@ export default function ToolCard({ turnId, block }: { turnId: string; block: Too
           <button className="btn btn-success-soft px-2.5 py-1 text-xs" onClick={() => decide(true)}>
             通过
           </button>
-          <span className="ml-1 flex items-center gap-1.5">
-            <input
-              type="number"
-              min={1}
-              className="w-14 rounded-md border border-amber-300 bg-white px-1.5 py-1 text-xs outline-none focus:border-amber-400"
-              value={raise}
-              onChange={e => setRaise(Math.max(1, Number(e.target.value) || 1))}
-            />
-            <button
-              className="btn btn-success-soft px-2.5 py-1 text-xs"
-              title="通过本次调用，并将工具调用上限提高指定次数"
-              onClick={() => decide(true, raise)}
-            >
-              通过并提高上限
-            </button>
-          </span>
+          {block.approvalKind === 'threshold' && (
+            <span className="ml-1 flex items-center gap-1.5">
+              <input
+                type="number"
+                min={1}
+                className="w-14 rounded-md border border-amber-300 bg-white px-1.5 py-1 text-xs outline-none focus:border-amber-400"
+                value={raise}
+                onChange={e => setRaise(Math.max(1, Number(e.target.value) || 1))}
+              />
+              <button
+                className="btn btn-success-soft px-2.5 py-1 text-xs"
+                title="通过本次调用，并将工具调用上限提高指定次数"
+                onClick={() => decide(true, raise)}
+              >
+                通过并提高上限
+              </button>
+            </span>
+          )}
         </div>
       ) : block.decision ? (
         <div className="border-t border-zinc-100 bg-zinc-50/60 px-3 py-2 text-[11px] font-medium">
