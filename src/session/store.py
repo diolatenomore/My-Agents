@@ -185,3 +185,36 @@ class SessionStore:
         """全量覆盖上下文消息（压缩后使用）"""
         await cls.delete_all_context_messages(session_id)
         await cls.append_context_messages(session_id, msg_dicts)
+
+    # ========== 子 Agent 消息（subagent_messages）CRUD ==========
+
+    @classmethod
+    async def append_subagent_messages(cls, tool_call_id: str, msg_dicts: list[dict]):
+        """为子 Agent 追加消息（使用 tool_call_id 作为 session_id 存储到 session_messages 表）
+
+        子 Agent 消息也存储在 session_messages 表中，通过 tool_call_id 与父会话的 session_id 隔离。
+        不自动创建 sessions 表的行（子 Agent 不是独立会话）。
+        """
+        if not msg_dicts:
+            return
+        async with db_pool.get_conn() as conn:
+            # 先清除该 tool_call_id 的旧消息（重新运行时覆盖）
+            await conn.execute(
+                "DELETE FROM session_messages WHERE session_id = ?",
+                (tool_call_id,),
+            )
+            for d in msg_dicts:
+                await conn.execute(
+                    "INSERT INTO session_messages (session_id, role, content) VALUES (?, ?, ?)",
+                    (tool_call_id, d["role"], json.dumps(d, ensure_ascii=False)),
+                )
+
+    @classmethod
+    async def get_subagent_messages(cls, tool_call_id: str) -> list[dict]:
+        """获取子 Agent 的消息历史（按 id 正序）"""
+        async with db_pool.get_conn() as conn:
+            rows = await (await conn.execute(
+                "SELECT content FROM session_messages WHERE session_id = ? ORDER BY id ASC",
+                (tool_call_id,),
+            )).fetchall()
+            return [json.loads(row["content"]) for row in rows]

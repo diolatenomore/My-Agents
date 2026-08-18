@@ -56,6 +56,11 @@ export interface SessionMessagesResponse {
   context_tokens: number;
 }
 
+export interface SubagentMessagesResponse {
+  tool_call_id: string;
+  messages: StoredMessage[];
+}
+
 // ===== 模型 =====
 
 export interface ModelConfig {

@@ -12,12 +12,14 @@ from pydantic import BaseModel, Field
 
 from src.agent.model_manager import model_manager
 from src.agent.react_loop import _to_openai_messages, _build_request_kwargs
+from src.session.store import SessionStore
 from src.tools.registry import registry
+from src.tools.todo_tools import TodoStore
 from src.utils.common import logger
 
 _SUBAGENT_BLOCKED_TOOLS = frozenset({"delegate_task", "query_memory", "save_memory"})
 
-_CHILD_PROMPT = """你是一个专注于执行委派任务的子智能体。
+_CHILD_PROMPT = """你是一个专注于执行被委派的任务的子智能体。
 
 YOUR TASK（你的任务）:
 {goal}
@@ -46,22 +48,48 @@ class DelegateTaskInput(BaseModel):
 def _build_child_prompt(goal: str, context: Optional[str] = None) -> str:
     return _CHILD_PROMPT.format(goal=goal, context=context or "（无额外上下文）")
 
-# TODO cancel事件和超时处理
+
+def _extract_reasoning(message) -> str:
+    """从非流式响应 message 中提取思考过程（DeepSeek 推理模式）"""
+    reasoning = getattr(message, "reasoning_content", None)
+    if reasoning is None and hasattr(message, "model_extra") and message.model_extra:
+        reasoning = message.model_extra.get("reasoning_content", "")
+    return reasoning or ""
+
+
+async def _persist_subagent_messages(tool_call_id: str, messages: list[dict]):
+    """将子 Agent 的对话消息持久化到数据库"""
+    if not tool_call_id:
+        return
+    try:
+        await SessionStore.append_subagent_messages(tool_call_id, messages)
+    except Exception as e:
+        logger.error(f"[SubAgent] 持久化消息失败: {e}")
+
+
 async def run_subagent(
     model_id: str,
     prompt: str,
     tools: list,
     cancel_event: Optional[asyncio.Event] = None,
+    tool_call_id: str = "",
 ) -> str:
-    """运行一个隔离上下文的子 Agent，返回最终 summary 文本"""
+    """运行一个隔离上下文的子 Agent，返回最终 summary 文本
+
+    Args:
+        tool_call_id: 父 Agent 的 tool_call_id，用于持久化和关联子 Agent 历史
+    """
     client, model_config = await model_manager.resolve_model(model_id)
     max_iterations = model_config.get("max_iterations", 30)
+
+    # 创建子 Agent 独立的 TodoStore（与父 Agent 隔离）
+    todo_store = TodoStore()
 
     messages = [
         {"role": "user", "content": prompt},
     ]
-
     last_content = ""
+
     try:
         for _ in range(max_iterations):
             # 迭代间隙检查：主 Agent 是否已取消
@@ -75,9 +103,16 @@ async def run_subagent(
             )
             message = response.choices[0].message
             content = message.content or ""
+            reasoning = _extract_reasoning(message)
             last_content = content
 
             if not message.tool_calls:
+                # 最终回复，持久化完整对话历史
+                final_msg = {"role": "assistant", "content": content}
+                if reasoning:
+                    final_msg["reasoning_content"] = reasoning
+                messages.append(final_msg)
+                await _persist_subagent_messages(tool_call_id, messages)
                 return content
 
             tool_calls = []
@@ -89,6 +124,8 @@ async def run_subagent(
                 tool_calls.append({"id": tc.id, "name": tc.function.name, "args": args})
 
             assistant_msg = {"role": "assistant", "content": content}
+            if reasoning:
+                assistant_msg["reasoning_content"] = reasoning
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
             messages.append(assistant_msg)
@@ -99,8 +136,13 @@ async def run_subagent(
                 if cancel_event and cancel_event.is_set():
                     return "用户中断了对话"
 
+                # 注入内部参数：todo 工具注入 TodoStore
+                tool_args = tc["args"]
+                if tc["name"] == "todo":
+                    tool_args = {**tool_args, "_todo_store": todo_store}
+
                 try:
-                    result_str = str(await registry.dispatch(tc["name"], tc["args"]))
+                    result_str = str(await registry.dispatch(tc["name"], tool_args))
                 except Exception as e:
                     result_str = f"工具执行失败: {e}"
                     logger.error(f"[SubAgent] 工具 '{tc['name']}' 执行失败: {e}")
@@ -122,13 +164,22 @@ async def run_subagent(
                 **_build_request_kwargs(model_config),
             )
             summary = response.choices[0].message.content or ""
+            summary_reasoning = _extract_reasoning(response.choices[0].message)
+            summary_msg = {"role": "assistant", "content": summary}
+            if summary_reasoning:
+                summary_msg["reasoning_content"] = summary_reasoning
+            messages.append(summary_msg)
+            await _persist_subagent_messages(tool_call_id, messages)
             return summary or "子智能体达到迭代上限，最后的输出为：\n" + last_content
         except Exception as e:
             logger.error(f"[SubAgent] 总结请求失败: {e}")
-            return summary or "子智能体达到迭代上限，最后的输出为：\n" + last_content
+            await _persist_subagent_messages(tool_call_id, messages)
+            return last_content or "子智能体达到迭代上限，最后的输出为：\n" + last_content
 
     except asyncio.CancelledError:
         logger.info("[SubAgent] Task 被外部取消")
+        messages.append({"role": "assistant", "content": "用户中断了对话"})
+        await _persist_subagent_messages(tool_call_id, messages)
         return "用户中断了对话"
 
 
@@ -137,6 +188,7 @@ async def _delegate_subagent(
     context: str = "",
     _model_id: str = "",
     _cancel_event: Optional[asyncio.Event] = None,
+    _tool_call_id: str = "",
 ) -> str:
     if not _model_id:
         return "错误：无法获取当前模型配置，无法启动子智能体"
@@ -151,6 +203,7 @@ async def _delegate_subagent(
             prompt=_build_child_prompt(goal, context),
             tools=tools,
             cancel_event=_cancel_event,
+            tool_call_id=_tool_call_id,
         )
     except Exception as e:
         return f"子智能体执行出错: {e}"

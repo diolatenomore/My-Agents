@@ -17,6 +17,7 @@ import asyncio
 from typing import Optional
 
 from src.session.manager import SessionManager
+from src.session.store import SessionStore
 from src.db.sqlite_pool import db_pool
 from src.db.init_db import init_db
 from src.utils.common import logger
@@ -571,6 +572,16 @@ async def get_session_messages(session_id: str = Path(...)):
         "session_id": session_id,
         "messages": messages,
         "context_tokens": ctx_tokens,
+    })
+
+
+@app.get('/api/sessions/{session_id}/subagent/{tool_call_id}')
+async def get_subagent_messages(session_id: str = Path(...), tool_call_id: str = Path(...)):
+    """获取子 Agent 的消息历史（以 tool_call_id 为标识）"""
+    messages = await SessionStore.get_subagent_messages(tool_call_id)
+    return JSONResponse(content={
+        "tool_call_id": tool_call_id,
+        "messages": messages,
     })
 
 

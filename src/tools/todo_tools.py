@@ -111,7 +111,7 @@ async def _handle_todo(
     """
     if _todo_store is None:
         return json.dumps(
-            {"error": "TodoStore 不可用，子智能体不支持任务规划"},
+            {"todos": [], "summary": "（当前会话不支持任务规划）"},
             ensure_ascii=False,
         )
 

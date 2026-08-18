@@ -1,5 +1,5 @@
 import { apiFetch } from './client';
-import type { SessionDTO, SessionMessagesResponse } from '../types';
+import type { SessionDTO, SessionMessagesResponse, SubagentMessagesResponse } from '../types';
 
 export function listSessions(): Promise<SessionDTO[]> {
   return apiFetch<SessionDTO[]>('/api/sessions');
@@ -21,4 +21,8 @@ export function renameSession(
 
 export function getSessionMessages(sessionId: string): Promise<SessionMessagesResponse> {
   return apiFetch(`/api/sessions/${sessionId}/messages`);
+}
+
+export function getSubagentMessages(sessionId: string, toolCallId: string): Promise<SubagentMessagesResponse> {
+  return apiFetch(`/api/sessions/${sessionId}/subagent/${toolCallId}`);
 }
