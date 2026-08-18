@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import locale
 import re
 import sys
 from typing import Optional
@@ -76,13 +77,25 @@ class ExecuteInput(BaseModel):
     )
 
 
+def _decode_output(data: bytes) -> str:
+    """解码字节串，优先 UTF-8，失败时回退到系统区域编码（Windows 兼容）"""
+    if not isinstance(data, bytes):
+        return data
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        # Windows 控制台输出可能是系统区域编码（如中文 GBK/CP936）
+        encoding = locale.getpreferredencoding(False)  # 如 'cp936'
+        return data.decode(encoding, errors="replace")
+
+
 def _format_output(stdout: bytes, stderr: bytes) -> str:
     """将 stdout/stderr 格式化为字符串，超长时保留头尾"""
     output = ""
     if stdout:
-        output += stdout.decode() if isinstance(stdout, bytes) else stdout
+        output += _decode_output(stdout)
     if stderr:
-        stderr_text = stderr.decode() if isinstance(stderr, bytes) else stderr
+        stderr_text = _decode_output(stderr)
         if output:
             output += "\n--- stderr ---\n"
         output += stderr_text
