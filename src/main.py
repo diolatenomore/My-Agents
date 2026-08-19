@@ -846,5 +846,13 @@ if (FRONTEND_DIST / 'index.html').is_file():
 
 
 if __name__ == '__main__':
+    import sys
     import uvicorn
-    uvicorn.run(app, host='localhost', port=8000)
+
+    # 端口优先级：命令行 --port > 环境变量 PORT > 默认 8000
+    port = int(os.environ.get('PORT', '8000'))
+    for i, arg in enumerate(sys.argv):
+        if arg == '--port' and i + 1 < len(sys.argv):
+            port = int(sys.argv[i + 1])
+            break
+    uvicorn.run(app, host='localhost', port=port)
