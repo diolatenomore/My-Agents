@@ -2,8 +2,6 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from src.models.task import Priority
-
 
 class ChatRequest(BaseModel):
     segments: Optional[List[dict]] = None   # 用户消息分段（text/skill）
