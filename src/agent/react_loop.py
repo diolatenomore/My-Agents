@@ -824,7 +824,12 @@ async def _execute_tool_calls_parallel(
                 "tool_call_id": tc["id"],
             }
         else:
-            yield {"type": "tool_call", "name": tool_name, "args": tc["args"]}
+            yield {
+                "type": "tool_call",
+                "name": tool_name,
+                "args": tc["args"],
+                "tool_call_id": tc["id"],
+            }
 
     # ===== Phase 2+3 合并：并发执行 + 边完成边 yield =====
 

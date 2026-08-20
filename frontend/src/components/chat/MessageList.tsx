@@ -13,9 +13,6 @@ function ChatEmpty({ noModel }: { noModel: boolean }) {
         <MessagesSquare size={26} />
       </div>
       <div className="mt-4 text-base font-semibold text-zinc-700">开始新的对话</div>
-      <div className="mt-1.5 max-w-sm text-[13px] leading-relaxed text-zinc-400">
-        Agent 会通过 ReAct 循环自主思考、调用工具并给出结果；文件修改与危险操作会请求你的审批。
-      </div>
       {noModel && (
         <div className="mt-4 rounded-lg bg-amber-50 px-3.5 py-2 text-xs text-amber-700">
           还没有可用的模型配置，请先前往
