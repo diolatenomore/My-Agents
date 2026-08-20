@@ -1,8 +1,10 @@
 # my-agents
 
-一个自托管的**多模态 AI Agent 平台**，提供完整的前端聊天界面、ReAct 智能体循环、工具系统、长期记忆、虚拟文件系统（VFS）审批与技能管理，适合作为自主 Agent 的原型快速起步。
+一个基于 ReAct 循环的自托管多工具 AI 助手，支持流式对话、虚拟文件系统审批、跨会话长期记忆、上下文压缩、可拔插skill，可接入任意 OpenAI 兼容的模型服务。
 
 后端使用 FastAPI + SSE 流式响应，前端使用 React + TypeScript + Vite，Agent 通过 OpenAI 兼容接口接入任意模型服务。
+
+![my-agents 主界面](screenshot1.png)
 
 ## 功能特性
 
