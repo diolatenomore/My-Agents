@@ -294,7 +294,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (streaming) return;
       const app = useAppStore.getState();
       const turnId = uid();
+      const requestId = uid();
       const controller = new AbortController();
+      const prevEntries = get().entries;
       set(state => ({
         entries: [
           ...state.entries,
@@ -306,16 +308,24 @@ export const useChatStore = create<ChatState>((set, get) => {
         abortController: controller,
       }));
       try {
-        await streamChat(
+        const outcome = await streamChat(
           {
             segments,
             session_id: app.currentSessionId || undefined,
             model_id: app.selectedModelId || undefined,
             project_id: app.currentProjectId || undefined,
+            request_id: requestId,
           },
           ev => applyEvent(turnId, ev),
           controller.signal,
         );
+        if (outcome === 'duplicate') {
+          // 重复请求已被后端丢弃：静默撤销临时占位并从服务端对齐权威历史，不弹错
+          const sid = useAppStore.getState().currentSessionId;
+          set({ entries: prevEntries });
+          if (sid) await get().loadHistory(sid);
+          return;
+        }
         // 流正常结束但没收到终止事件（防御）
         const turn = findTurn(get().entries, turnId);
         if (turn?.status === 'streaming') {

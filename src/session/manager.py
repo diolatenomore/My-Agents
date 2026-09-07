@@ -1,7 +1,5 @@
 """SessionManager — Session 的高级操作封装"""
 
-import asyncio
-from contextlib import asynccontextmanager
 from typing import Optional
 
 from src.session.models import (
@@ -16,15 +14,27 @@ class SessionManager:
 
     def __init__(self):
         self.store = SessionStore()
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._active: dict[str, Optional[str]] = {}
+        self._processed: dict[str, set[str]] = {}
 
-    @asynccontextmanager
-    async def lock(self, session_id: str):
-        """获取 session 级别的异步锁，确保同一 session 的读写串行化"""
-        if session_id not in self._locks:
-            self._locks[session_id] = asyncio.Lock()
-        async with self._locks[session_id]:
-            yield
+    def try_acquire(self, session_id: str, request_id: Optional[str]) -> bool:
+        """尝试占位处理本请求；返回 False 表示应丢弃（并发/重复）。
+
+        同一 session 同时只允许一条请求在跑；已完成的 request_id 会命中去重，
+        因此"网络抖动重放同一个 request_id"被丢弃，而"新一轮的新 request_id"正常处理。
+        """
+        if session_id in self._active:
+            return False
+        if request_id is not None and request_id in self._processed.get(session_id, ()):
+            return False
+        self._active[session_id] = request_id
+        return True
+
+    def release(self, session_id: str, request_id: Optional[str]) -> None:
+        """释放占位，并把已完成的 request_id 记录到去重集合。"""
+        self._active.pop(session_id, None)
+        if request_id is not None:
+            self._processed.setdefault(session_id, set()).add(request_id)
 
     async def get_session(self, session_id: str) -> Optional[Session]:
         return await self.store.get_session(session_id)

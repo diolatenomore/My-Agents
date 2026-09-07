@@ -168,8 +168,12 @@ async def chat_stream(chat_request: ChatRequest):
 
     session_id = chat_request.session_id or str(uuid.uuid4())
 
+    # 幂等去重：同一 session 同时只处理第一条，重复/并发请求直接丢弃（前端静默忽略）
+    if not app.state.session_manager.try_acquire(session_id, chat_request.request_id):
+        return JSONResponse(content={"code": 409, "type": "duplicate", "message": "duplicate"}, status_code=200)
+
     return StreamingResponse(
-        _stream_events(segments, session_id, app.state.session_manager, chat_request.model_id, chat_request.project_id),
+        _stream_events(segments, session_id, app.state.session_manager, chat_request.model_id, chat_request.project_id, chat_request.request_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -180,7 +184,7 @@ async def chat_stream(chat_request: ChatRequest):
 
 
 async def _stream_events(
-    segments: list, session_id: str, session_manager: SessionManager, model_id: str, project_id: Optional[str] = None,
+    segments: list, session_id: str, session_manager: SessionManager, model_id: str, project_id: Optional[str] = None, request_id: Optional[str] = None,
 ):
     """生成 SSE 事件流"""
     from src.vfs.task_context import set_current_task_id, clean_current_task_id, init_vfs, clean_vfs
@@ -260,37 +264,37 @@ async def _stream_events(
         # 提前通知前端 session_id
         yield f"event: session_ready\ndata: {json.dumps({'type': 'session_ready', 'session_id': session_id}, ensure_ascii=False)}\n\n"
 
-        async with session_manager.lock(session_id):
-            # 注册取消事件
-            cancel_event = cancel_registry.create(session_id)
-            
-            async for event in run_agent_stream(
-                cancel_event=cancel_event,
-                context_messages=context_messages,
-                display_messages=display_messages,
-                session_id=session_id,
-                model_id=model_id,
-                last_context_tokens=ctx_tokens,
-            ):
-                if event["type"] in ("cancelled", "done"):
-                    display_messages = event.pop("display_messages", [])
-                    context_messages = event.pop("context_messages", [])
-                    final_content = event.get("content", "")
-                    last_context_tokens = event.get("context_tokens", 0)
-                    compression_happened = event.pop("compression_happened", False)
-                    # 检查是否有未审批的 VFS 变更，嵌入审批树
-                    from src.vfs.diff_table import DiffTable
-                    from src.vfs.review_manager import ReviewManager
-                    if await DiffTable.has_unreviewed(session_id):
-                        review_tree = await ReviewManager.build_review_tree(session_id)
-                        if review_tree:
-                            event["review_tree"] = review_tree
-                yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+        # 注册取消事件
+        cancel_event = cancel_registry.create(session_id)
+
+        async for event in run_agent_stream(
+            cancel_event=cancel_event,
+            context_messages=context_messages,
+            display_messages=display_messages,
+            session_id=session_id,
+            model_id=model_id,
+            last_context_tokens=ctx_tokens,
+        ):
+            if event["type"] in ("cancelled", "done"):
+                display_messages = event.pop("display_messages", [])
+                context_messages = event.pop("context_messages", [])
+                final_content = event.get("content", "")
+                last_context_tokens = event.get("context_tokens", 0)
+                compression_happened = event.pop("compression_happened", False)
+                # 检查是否有未审批的 VFS 变更，嵌入审批树
+                from src.vfs.diff_table import DiffTable
+                from src.vfs.review_manager import ReviewManager
+                if await DiffTable.has_unreviewed(session_id):
+                    review_tree = await ReviewManager.build_review_tree(session_id)
+                    if review_tree:
+                        event["review_tree"] = review_tree
+            yield f"event: {event['type']}\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     except Exception as e:
         logger.error(f"流式输出出错: {e}")
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
     finally:
+        session_manager.release(session_id, request_id)
         cancel_registry.clear(session_id)
         approval_registry.clear_threshold(session_id)
         await clean_vfs()

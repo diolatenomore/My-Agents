@@ -8,6 +8,8 @@ export interface ChatStreamBody {
   model_id?: string;
   /** 仅新会话首条消息时生效（会话归属项目后不再变化） */
   project_id?: string;
+  /** 本次请求幂等标识：前端每次用户提问生成新 id，重试/抖动复用同一 id */
+  request_id?: string;
 }
 
 /**
@@ -18,7 +20,7 @@ export async function streamChat(
   body: ChatStreamBody,
   onEvent: (ev: StreamEvent) => void,
   signal?: AbortSignal,
-): Promise<void> {
+): Promise<'ok' | 'duplicate'> {
   const res = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -28,12 +30,13 @@ export async function streamChat(
 
   const contentType = res.headers.get('content-type') ?? '';
   if (!contentType.includes('text/event-stream')) {
-    let data: { message?: string } | null = null;
+    let data: { message?: string; type?: string } | null = null;
     try {
-      data = (await res.json()) as { message?: string };
+      data = (await res.json()) as { message?: string; type?: string };
     } catch {
       // 非 JSON 响应体，走通用错误信息
     }
+    if (data?.type === 'duplicate') return 'duplicate';
     throw new ApiError(data?.message ?? `请求失败（HTTP ${res.status}）`, res.status, data);
   }
   if (!res.body) {
@@ -64,6 +67,7 @@ export async function streamChat(
       onEvent(parsed);
     }
   }
+  return 'ok';
 }
 
 export function cancelChat(sessionId: string): Promise<Response> {

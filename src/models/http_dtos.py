@@ -8,6 +8,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None  # 前端传，不传则后端生成
     model_id: Optional[str] = None    # 模型配置 ID，不传则使用默认模型
     project_id: Optional[str] = None  # 项目 ID，仅新会话首条消息时生效（归属后不变）
+    request_id: Optional[str] = None  # 客户端生成的本次请求幂等标识；缺省走旧行为（仅并发防护）
 
 
 class ChatResponse(BaseModel):
