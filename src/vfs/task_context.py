@@ -25,11 +25,13 @@ class VFSContext:
 
 _vfs_registry: dict[str, VFSContext] = {}
 _vfs_locks: dict[str, asyncio.Lock] = {}
-_locks_lock = asyncio.Lock()  # 仅保护 _vfs_locks dict 本身
 
 
 def _get_or_create_lock(task_id: str) -> asyncio.Lock:
-    """获取或创建 per-task_id 的锁（调用方负责互斥）"""
+    """获取或创建 per-task_id 的锁。
+
+    单线程事件循环下协程只在 await 处切换，本函数为纯同步操作天然原子，无需额外加锁。
+    """
     if task_id not in _vfs_locks:
         _vfs_locks[task_id] = asyncio.Lock()
     return _vfs_locks[task_id]
@@ -65,9 +67,7 @@ def clean_current_task_id() -> None:
 async def init_vfs(task_id: str):
     """为指定 task_id 创建并加载 VFS 实例（已存在则增加引用计数）"""
 
-    async with _locks_lock:
-        lock = _get_or_create_lock(task_id)
-
+    lock = _get_or_create_lock(task_id)
     async with lock:
         if task_id in _vfs_registry:
             _vfs_registry[task_id].ref_count += 1
@@ -112,9 +112,7 @@ async def clean_vfs():
     """减少当前协程对应 task 的 VFS 引用计数，降至 0 才真正清理"""
     task_id = get_current_task_id()
 
-    async with _locks_lock:
-        lock = _get_or_create_lock(task_id)
-
+    lock = _get_or_create_lock(task_id)
     async with lock:
         ctx = _vfs_registry.get(task_id)
         if ctx is None:
